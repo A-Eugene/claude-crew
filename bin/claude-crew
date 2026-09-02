@@ -1,0 +1,719 @@
+#!/usr/bin/env bash
+# claude-crew — park the N most recently used Claude conversations in tmux slots, and
+# move them around without destroying the terminal they live in.
+#
+# Replaces start_claudes.sh + restart_claudes.sh (retired 2026-09-02). Every
+# post-mortem comment in those two files is carried over here; each one marks a
+# failure that has actually happened on this host, so do not "simplify" one away
+# without reproducing the failure it prevents.
+#
+# The model:
+#   slot   a numbered parking space, tmux session "<TMUX_PREFIX><n>". It runs a
+#          SHELL, and claude is a command typed into that shell. Killing claude
+#          therefore leaves the pane, its scrollback, and its window name intact,
+#          which is what makes `switch`, `model` and `effort` cheap instead of
+#          destructive. The old script made claude the pane process, so every
+#          model change meant deleting the terminal.
+#   conv   a conversation (transcript id + descriptive title). Conversations move
+#          between slots freely; the slot number says nothing about which one.
+#
+# Usage:  claude-crew <command> [args]
+#   setup [flags]              write/patch crew.conf (see --help)
+#   status                     slot -> conversation mapping, and what is live
+#   start [--force|--dry-run]  fill free slots from the newest N conversations
+#   restart [delay]            restart every slot via systemd, WITHOUT killing
+#                              the caller (see the comment on cmd_restart)
+#   switch <A> <B>             put conversation B in A's slot; swap if B is live
+#   prompt <target> <text>     type a prompt into a slot's running claude
+#   model  <target> <model>    relaunch that slot's conversation on a new model
+#   effort <target> <level>    relaunch that slot's conversation at a new effort
+#   update                     upgrade the claude binary, then restart
+#
+# <target> is a slot number, a tmux session name, or a case-insensitive
+# substring of a conversation title ("click" finds "[VPS] Click Clack").
+
+set -euo pipefail
+
+# readlink -f, not dirname alone: crew is reached through /root/Scripts/claude-crew,
+# a symlink, and the unresolved path puts CREW_DIR at /root — so every run
+# reported "not set up yet" while crew.conf sat in the skill directory.
+CREW_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+CONF="$CREW_DIR/crew.conf"
+
+# --- environment ------------------------------------------------------------
+# ${HOME:-/root}: systemd-run (the detached-restart path) starts with a minimal
+# environment and sets no HOME, which tripped `set -u` and failed the whole run.
+HOME="${HOME:-/root}"; export HOME
+
+# Same class of bug, and it failed far more quietly. A systemd unit's PATH is
+#   /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
+# which does NOT contain ~/.local/bin, where `claude` lives. Every pane then ran
+# `claude` -> command not found and exited instantly, while `tmux new-session`
+# had already returned 0 — so the run logged "5 started" and systemd exited
+# clean. A silent total failure, observed 2026-08-02 01:10. Resolve the binary
+# here rather than trusting the caller's environment, so inline, systemd and
+# cron all behave alike.
+PATH="$HOME/.local/bin:$PATH"; export PATH
+
+# --- config -----------------------------------------------------------------
+WORKDIR=/root
+SLOTS=5
+MODEL=opus
+EFFORT=high
+PERMISSION_MODE=auto
+REMOTE_CONTROL=on
+TMUX_PREFIX=Claude
+SHELL_CMD=bash
+# Seam for testing: point this at a stub to exercise the tmux mechanics without
+# resuming a real conversation (two processes on one transcript interleave
+# writes and corrupt it).
+CLAUDE_BIN=claude
+
+CONF_KEYS=(WORKDIR SLOTS MODEL EFFORT PERMISSION_MODE REMOTE_CONTROL TMUX_PREFIX SHELL_CMD CLAUDE_BIN)
+
+die() { printf 'crew: %s\n' "$*" >&2; exit 1; }
+
+load_conf() {
+  [ -f "$CONF" ] || die "not set up yet — run: claude-crew setup"
+  # shellcheck disable=SC1090
+  source "$CONF"
+  local k
+  for k in "${CONF_KEYS[@]}"; do
+    [ -n "${!k:-}" ] || die "crew.conf is missing $k — run: claude-crew setup"
+  done
+  command -v "$CLAUDE_BIN" >/dev/null || die "claude binary not found: $CLAUDE_BIN (PATH=$PATH)"
+}
+
+# Transcript store for a working directory. Claude Code encodes the cwd by
+# replacing every "/" and "." with "-": /root -> -root.
+projdir() { printf '%s/.claude/projects/%s\n' "$HOME" "$(printf '%s' "$WORKDIR" | sed 's#[/.]#-#g')"; }
+
+sess_name() { printf '%s%s\n' "$TMUX_PREFIX" "$1"; }
+
+# --- conversation selection --------------------------------------------------
+# Emit "<id>\t<title>" for the newest $1 resumable conversations, newest first.
+#
+# The store holds ~1600 files, almost all automated background runs (auto-memory
+# "Session learning" jobs). Blocklisting those — rather than allowlisting known
+# good types — means a new kind of interactive session is never silently
+# dropped. Titles are read from the tail: they are appended repeatedly, so the
+# last one is near EOF, and some transcripts are over 100 MB.
+list_convs() {
+  python3 - "$(projdir)" "${1:-$SLOTS}" <<'PY'
+import json, os, re, sys, glob
+
+projdir, limit = sys.argv[1], int(sys.argv[2])
+files = sorted(glob.glob(os.path.join(projdir, "*.jsonl")),
+               key=os.path.getmtime, reverse=True)
+
+# Tolerate whitespace after the colon: a transcript written by anything other
+# than Claude Code itself may use json.dumps' default spacing.
+TITLE_RE = re.compile(rb'"customTitle"\s*:\s*"((?:[^"\\]|\\.)*)"')
+# "VPS Claude 4 [Cognee]" -> "Cognee";  "VPS Claude 4" -> ""  (nothing descriptive)
+LEGACY_RE = re.compile(r'^\s*VPS\s+Claude\s*\d+\s*(?:\[(?P<desc>.*)\]\s*)?$', re.I)
+# A "[VPS]" host marker is re-applied to the title on launch. Feeding the marked
+# title back in would stack it ("[VPS] [VPS] Cognee") a little further on every
+# restart, so collapse runs of it to exactly one and keep the user's marker.
+VPS_RE = re.compile(r'^(?:\s*\[VPS\]\s*)+', re.I)
+
+
+def normalise(title):
+    m = LEGACY_RE.match(title)
+    if m:
+        title = (m.group("desc") or "").strip()
+    if VPS_RE.match(title):
+        title = "[VPS] " + VPS_RE.sub("", title).strip()
+    return title.strip()
+
+
+def last_title(path):
+    """Last customTitle in the file, scanning the tail first."""
+    size = os.path.getsize(path)
+    for window in (1 << 20, size):          # 1 MiB, then whole file
+        with open(path, "rb") as fh:
+            fh.seek(max(0, size - window))
+            hits = TITLE_RE.findall(fh.read())
+        if hits:
+            try:
+                return json.loads('"%s"' % hits[-1].decode("utf-8", "replace"))
+            except Exception:
+                return hits[-1].decode("utf-8", "replace")
+        if window >= size:
+            break
+    return ""
+
+
+def resumable(path):
+    """True only for genuine interactive conversations.
+
+    Automated auto-memory jobs are injected programmatically and their first
+    user turn carries a literal "Human:" prefix, which a real user message never
+    has. Testing record 0's type is NOT sufficient and cost a live slot: records
+    are not in a fixed order, so a job whose file began `ai-title, mode,
+    queue-operation, ...` passed the old check, got resumed into a tmux session,
+    and hung there unable to be prompted. Judge by the first user turn instead —
+    a file with no user turn at all is not a conversation either.
+    """
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            for i, line in enumerate(fh):
+                if i > 80:
+                    break
+                try:
+                    d = json.loads(line)
+                except Exception:
+                    continue
+                if d.get("type") != "user":
+                    continue
+                content = (d.get("message") or {}).get("content")
+                if isinstance(content, list) and content and isinstance(content[0], dict):
+                    text = str(content[0].get("text", ""))
+                else:
+                    text = str(content or "")
+                return not text.lstrip().startswith("Human:")
+    except Exception:
+        return False
+    return False
+
+
+def last_user_ts(path):
+    """Timestamp of the most recent *human* turn, or "" if none found.
+
+    File mtime is the wrong ranking key: a live session's hooks rewrite its
+    transcript constantly, so merely *being running* keeps a conversation at the
+    top — a throwaway would hold its slot forever and evict real work. The last
+    user turn measures actual use instead.
+    """
+    size = os.path.getsize(path)
+    with open(path, "rb") as fh:
+        fh.seek(max(0, size - (1 << 20)))
+        chunk = fh.read()
+    for line in reversed(chunk.split(b"\n")):
+        if b'"type":"user"' not in line and b'"type": "user"' not in line:
+            continue
+        try:                                  # the first line may be truncated
+            d = json.loads(line)
+        except Exception:
+            continue
+        if d.get("type") == "user" and d.get("timestamp"):
+            return str(d["timestamp"])
+    return ""
+
+
+# mtime is a cheap prefilter over ~1600 files; only these candidates get the
+# expensive tail read. Widen the multiplier if a genuinely used conversation
+# ever sits outside the newest 4*limit by mtime.
+cands = []
+for path in files[: max(4 * limit, 20)]:
+    if not resumable(path):
+        continue
+    cands.append((last_user_ts(path) or "", os.path.getmtime(path), path))
+
+cands.sort(key=lambda c: (c[0], c[1]), reverse=True)
+for _ts, _mt, path in cands[:limit]:
+    sys.stdout.write("%s\t%s\n" % (os.path.basename(path)[:-6], normalise(last_title(path))))
+PY
+}
+
+# --- what is actually running ------------------------------------------------
+# Slots are interchangeable parking spaces, so "Claude3 exists" says nothing
+# about WHICH conversation is in it. Read the truth out of each pane's process
+# tree instead: a slot is busy only if it holds a live `claude --resume <id>`.
+declare -A SLOT_OF_CONV=()    # conversation id  -> slot it is live in
+declare -A CONV_OF_SLOT=()    # slot             -> conversation id
+declare -A PID_OF_SLOT=()     # slot             -> that claude's pid
+
+# Conversation id from a pid's argv, or empty. argv is NUL-separated, so the
+# value is simply the element after `--resume` — no regex over a flattened
+# string, which is what let stray shell wrappers match earlier.
+conv_of_pid() {
+  local cl; cl=$(tr '\0' '\n' < "/proc/$1/cmdline" 2>/dev/null) || return 0
+  grep -q "^${CLAUDE_BIN##*/}\$\|/${CLAUDE_BIN##*/}\$" <<<"$cl" || return 0
+  # No --resume in the cmdline is normal: a session started by hand holds no
+  # conversation id. grep then exits 1, pipefail propagates it, and as the
+  # function's last command `set -e` killed the whole script — silently, exit 1,
+  # every mode broken by one manual session. Observed 2026-08-09.
+  grep -A1 -x -- '--resume' <<<"$cl" | tail -1 || true
+}
+
+# The claude pid inside a slot, or empty. The pane process is now a shell, so
+# claude is a CHILD of it — walk one level down as well as testing the pane pid
+# itself (which still covers a pane launched the old way).
+claude_pid_in() {
+  local n="$1" s pane p
+  s=$(sess_name "$n")
+  tmux has-session -t "$s" 2>/dev/null || return 0
+  for pane in $(tmux list-panes -t "$s" -F '#{pane_pid}' 2>/dev/null); do
+    for p in "$pane" $(pgrep -P "$pane" 2>/dev/null); do
+      if [ -n "$(conv_of_pid "$p")" ] || grep -qx -- "${CLAUDE_BIN##*/}" \
+           <(tr '\0' '\n' < "/proc/$p/cmdline" 2>/dev/null | head -1) 2>/dev/null; then
+        echo "$p"; return 0
+      fi
+    done
+  done
+}
+
+scan_slots() {
+  SLOT_OF_CONV=(); CONV_OF_SLOT=(); PID_OF_SLOT=()
+  local n pid id
+  for ((n = 1; n <= SLOTS; n++)); do
+    pid=$(claude_pid_in "$n") || true
+    [ -n "$pid" ] || continue
+    PID_OF_SLOT[$n]="$pid"
+    id=$(conv_of_pid "$pid")
+    if [ -n "$id" ]; then
+      SLOT_OF_CONV["$id"]=$n
+      CONV_OF_SLOT[$n]="$id"
+    fi
+    # A slot whose claude carries no --resume is live but holds no conversation.
+    # It counts as busy (PID_OF_SLOT) but is not a parking space for a conv.
+  done
+}
+
+free_slot() {           # lowest slot with no live claude at all
+  local n
+  for ((n = 1; n <= SLOTS; n++)); do
+    [ -z "${PID_OF_SLOT[$n]:-}" ] && { echo "$n"; return 0; }
+  done
+  echo ""
+}
+
+# Is this conversation live in one of OUR slots? Rescans first, so it is always
+# reading the present, not a stale map.
+#
+# Do NOT reach for `pgrep -f -- "--resume $id"` here, however tempting. It
+# matches on a flattened command line, so any process that merely MENTIONS the
+# id counts — including the shell that invoked crew. That turns the launch
+# verification into a check that can pass while nothing actually started, which
+# is precisely the failure the verification exists to catch. Reading argv out of
+# /proc for the processes inside our own panes is the narrow, honest question.
+conv_is_live() {
+  local id="$1"
+  scan_slots
+  [ -n "${SLOT_OF_CONV[$id]:-}" ]
+}
+
+title_of_slot() {       # window name, which launch sets to the conversation title
+  tmux display-message -p -t "$(sess_name "$1")" '#{window_name}' 2>/dev/null || true
+}
+
+# --- pane and process control ------------------------------------------------
+# Create the tmux session running a SHELL if it does not exist. The pane must
+# outlive claude — that is the whole point of this design — so the shell is the
+# pane process and claude is only ever typed into it.
+ensure_pane() {
+  local n="$1" s; s=$(sess_name "$n")
+  if ! tmux has-session -t "$s" 2>/dev/null; then
+    tmux new-session -d -s "$s" -n "$s" -c "$WORKDIR" "$SHELL_CMD"
+  fi
+  # Wait for the shell to be ready to read. send-keys into a pane whose process
+  # has not reached its read loop can be dropped by the tty.
+  local i
+  for ((i = 0; i < 50; i++)); do
+    [ -n "$(tmux list-panes -t "$s" -F '#{pane_pid}' 2>/dev/null)" ] && { sleep 0.2; return 0; }
+    sleep 0.1
+  done
+  die "pane $s never became ready"
+}
+
+claude_cmd() {          # $1=conv id (may be empty)  $2=title (may be empty)  $3=model  $4=effort
+  local id="$1" title="$2" model="${3:-$MODEL}" effort="${4:-$EFFORT}"
+  local -a a=("$CLAUDE_BIN" --permission-mode "$PERMISSION_MODE" --model "$model" --effort "$effort")
+  [ -n "$title" ] && a+=(-n "$title")
+  if [ "$REMOTE_CONTROL" = on ]; then
+    if [ -n "$title" ]; then a+=(--remote-control "$title"); else a+=(--remote-control); fi
+  fi
+  [ -n "$id" ] && a+=(--resume "$id")
+  printf '%q ' "${a[@]}"
+}
+
+start_claude_in() {     # $1=slot $2=id $3=title [$4=model $5=effort]
+  local n="$1" id="$2" title="$3" s cmd
+  s=$(sess_name "$n")
+  ensure_pane "$n"
+  # Slots are assigned by recency, so the number alone no longer says what is in
+  # one. Name the window after the conversation so `tmux ls` stays readable.
+  tmux rename-window -t "$s" "${title:-${id:0:8}}" 2>/dev/null || true
+  cmd=$(claude_cmd "$id" "$title" "${4:-}" "${5:-}")
+  tmux send-keys -t "$s" -l -- "$cmd"
+  tmux send-keys -t "$s" Enter
+}
+
+# Stop the claude in a slot and LEAVE THE PANE. SIGTERM lets claude flush its
+# transcript; SIGKILL is the last resort after 30s.
+stop_claude_in() {
+  # Declared on separate lines on purpose: bash marks every name in a single
+  # `local` statement local BEFORE evaluating any of the right-hand sides, so
+  # `local n="$1" pid="${PID_OF_SLOT[$n]:-}"` reads an already-localised, still
+  # unset $n and aborts under `set -u`.
+  local n="$1"
+  local i pid="${PID_OF_SLOT[$n]:-}"
+  [ -n "$pid" ] || pid=$(claude_pid_in "$n")
+  [ -n "$pid" ] || return 0
+  kill "$pid" 2>/dev/null || true
+  for ((i = 0; i < 60; i++)); do
+    kill -0 "$pid" 2>/dev/null || { unset "PID_OF_SLOT[$n]"; return 0; }
+    sleep 0.5
+  done
+  kill -9 "$pid" 2>/dev/null || true
+  sleep 1
+  unset "PID_OF_SLOT[$n]"
+}
+
+# --- target resolution -------------------------------------------------------
+# A slot number, a tmux session name, or a case-insensitive substring of a live
+# slot's title. Refuses an ambiguous substring rather than guessing.
+resolve_slot() {
+  local arg="$1" n hits=() t
+  if [[ "$arg" =~ ^[0-9]+$ ]] && [ "$arg" -ge 1 ] && [ "$arg" -le "$SLOTS" ]; then
+    echo "$arg"; return 0
+  fi
+  for ((n = 1; n <= SLOTS; n++)); do
+    [ "$(sess_name "$n")" = "$arg" ] && { echo "$n"; return 0; }
+  done
+  for ((n = 1; n <= SLOTS; n++)); do
+    t=$(title_of_slot "$n")
+    [ -n "$t" ] || continue
+    shopt -s nocasematch
+    [[ "$t" == *"$arg"* ]] && hits+=("$n")
+    shopt -u nocasematch
+  done
+  case "${#hits[@]}" in
+    1) echo "${hits[0]}" ;;
+    0) die "no slot matches '$arg' (try: claude-crew status)" ;;
+    *) die "'$arg' matches slots ${hits[*]} — be more specific" ;;
+  esac
+}
+
+# A conversation id, from an id or a title substring. Searches well beyond the
+# live slots so you can pull in a conversation that is not currently parked.
+resolve_conv() {        # echoes "<id>\t<title>"
+  local arg="$1" hits=() row id title
+  if [[ "$arg" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+    while IFS=$'\t' read -r id title; do
+      [ "$id" = "$arg" ] && { printf '%s\t%s\n' "$id" "$title"; return 0; }
+    done < <(list_convs 60)
+    printf '%s\t\n' "$arg"; return 0
+  fi
+  while IFS=$'\t' read -r id title; do
+    shopt -s nocasematch
+    [[ "$title" == *"$arg"* ]] && hits+=("$id"$'\t'"$title")
+    shopt -u nocasematch
+  done < <(list_convs 60)
+  case "${#hits[@]}" in
+    1) printf '%s\n' "${hits[0]}" ;;
+    0) die "no conversation matches '$arg'" ;;
+    *) die "'$arg' matches ${#hits[@]} conversations:"$'\n'"$(printf '  %s\n' "${hits[@]}")" ;;
+  esac
+}
+
+# --- commands ----------------------------------------------------------------
+cmd_setup() {
+  # Re-running with no flags keeps every existing value, so setup is safe to
+  # call from start/restart as a gate.
+  [ -f "$CONF" ] && { # shellcheck disable=SC1090
+    source "$CONF"; }
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --workdir)         WORKDIR="$2"; shift 2 ;;
+      --slots)           SLOTS="$2"; shift 2 ;;
+      --model)           MODEL="$2"; shift 2 ;;
+      --effort)          EFFORT="$2"; shift 2 ;;
+      --permission-mode) PERMISSION_MODE="$2"; shift 2 ;;
+      --remote-control)  REMOTE_CONTROL="$2"; shift 2 ;;
+      --tmux-prefix)     TMUX_PREFIX="$2"; shift 2 ;;
+      --shell)           SHELL_CMD="$2"; shift 2 ;;
+      --claude-bin)      CLAUDE_BIN="$2"; shift 2 ;;
+      -h|--help)
+        sed -n '/^cmd_setup/,/^}/p' "$0" | grep -o '^      --[a-z-]*' | tr -d ' '
+        return 0 ;;
+      *) die "setup: unknown flag $1" ;;
+    esac
+  done
+
+  [[ "$SLOTS" =~ ^[0-9]+$ ]] && [ "$SLOTS" -ge 1 ] || die "setup: --slots must be a positive integer"
+  [ -d "$WORKDIR" ] || die "setup: --workdir $WORKDIR does not exist"
+  case "$EFFORT" in low|medium|high|xhigh|max) ;; *) die "setup: --effort must be low|medium|high|xhigh|max" ;; esac
+  case "$PERMISSION_MODE" in acceptEdits|auto|bypassPermissions|manual|dontAsk|plan) ;;
+    *) die "setup: --permission-mode is not a value claude accepts" ;; esac
+  case "$REMOTE_CONTROL" in on|off) ;; *) die "setup: --remote-control must be on or off" ;; esac
+
+  {
+    echo "# crew.conf — written by \`claude-crew setup\`. Safe to edit by hand."
+    echo "# Regenerate or patch with: claude-crew setup --model sonnet --slots 6"
+    local k
+    for k in "${CONF_KEYS[@]}"; do printf '%s=%q\n' "$k" "${!k}"; done
+  } > "$CONF"
+
+  local pd; pd=$(projdir)
+  echo "wrote $CONF"
+  sed 's/^/  /' "$CONF" | grep -v '^  #'
+  echo "  transcripts: $pd"
+  [ -d "$pd" ] || echo "  WARNING: that transcript directory does not exist yet" >&2
+}
+
+cmd_status() {
+  scan_slots
+  local -a rows; mapfile -t rows < <(list_convs "$SLOTS")
+  local n c t pid
+  echo "slots (prefix $TMUX_PREFIX, workdir $WORKDIR, $MODEL/$EFFORT/$PERMISSION_MODE, remote-control $REMOTE_CONTROL):"
+  for ((n = 1; n <= SLOTS; n++)); do
+    if ! tmux has-session -t "$(sess_name "$n")" 2>/dev/null; then
+      printf '  %-10s <no pane>\n' "$(sess_name "$n")"; continue
+    fi
+    c=${CONV_OF_SLOT[$n]:-}; pid=${PID_OF_SLOT[$n]:-}; t=$(title_of_slot "$n")
+    if [ -n "$c" ]; then
+      printf '  %-10s %s  %s\n' "$(sess_name "$n")" "${c:0:8}" "${t:-untitled}"
+    elif [ -n "$pid" ]; then
+      printf '  %-10s <claude running, no conversation id>  %s\n' "$(sess_name "$n")" "${t:-}"
+    else
+      printf '  %-10s <shell only — free>\n' "$(sess_name "$n")"
+    fi
+  done
+  echo "newest $SLOTS conversations:"
+  local id title
+  for row in "${rows[@]}"; do
+    IFS=$'\t' read -r id title <<<"$row"
+    if [ -n "${SLOT_OF_CONV[$id]:-}" ]; then
+      printf '  %-8s in %s  %s\n' "${id:0:8}" "$(sess_name "${SLOT_OF_CONV[$id]}")" "${title:-untitled}"
+    else
+      printf '  %-8s UNPLACED  %s\n' "${id:0:8}" "${title:-untitled}"
+    fi
+  done
+}
+
+cmd_start() {
+  local force=0 dry=0
+  case "${1:-}" in
+    --force)   force=1 ;;
+    --dry-run) dry=1 ;;
+    "")        ;;
+    *) die "start: usage: claude-crew start [--force|--dry-run]" ;;
+  esac
+
+  # Resolve the full mapping BEFORE touching anything: stopping a claude stops
+  # its transcript being written, which would perturb the very ordering we are
+  # selecting on.
+  local -a rows; mapfile -t rows < <(list_convs "$SLOTS")
+  [ "${#rows[@]}" -gt 0 ] || die "no resumable conversations in $(projdir)"
+  scan_slots
+
+  if [ "$force" = 1 ]; then
+    # Stop every slot up front, in a separate pass. Conversations move between
+    # slots between runs, so stopping slot-by-slot as we launch would start the
+    # new slot 1 while that same conversation is still live in slot 4 — two
+    # processes appending to one transcript — and then kill the wrong one.
+    local m
+    for ((m = 1; m <= SLOTS; m++)); do stop_claude_in "$m"; done
+    # Do not trust the loop above alone: confirm nothing we are about to launch
+    # is still dying, or the duplicate guard below skips every launch and
+    # --force becomes "stop everything and start nothing".
+    local i still m2
+    for ((i = 0; i < 60; i++)); do
+      still=0
+      for ((m2 = 1; m2 <= SLOTS; m2++)); do
+        [ -n "$(claude_pid_in "$m2")" ] && { still=1; break; }
+      done
+      [ "$still" -eq 0 ] && break
+      sleep 0.5
+    done
+    [ "${still:-0}" -eq 0 ] || echo "warning: old sessions still alive after 30s; launching anyway" >&2
+    scan_slots
+  fi
+
+  [ "$dry" = 1 ] && echo "plan:"
+  local started=0 kept=0 nofit=0 id title slot
+  for row in "${rows[@]}"; do
+    IFS=$'\t' read -r id title <<<"$row"
+    [ -n "$id" ] || continue
+
+    # Already live somewhere? Leave it exactly where it is. Two processes on one
+    # conversation interleave writes into a single transcript.
+    if [ -n "${SLOT_OF_CONV[$id]:-}" ]; then
+      printf '  %-8s already live in %s  (%s)\n' "${id:0:8}" "$(sess_name "${SLOT_OF_CONV[$id]}")" "${title:-untitled}"
+      kept=$((kept + 1)); continue
+    fi
+
+    slot=$(free_slot)
+    if [ -z "$slot" ]; then
+      printf '  %-8s NO FREE SLOT — all %s are busy  (%s)\n' "${id:0:8}" "$SLOTS" "${title:-untitled}"
+      nofit=$((nofit + 1)); continue
+    fi
+
+    if [ "$dry" = 1 ]; then
+      printf '  %-8s would start in %s  (%s)\n' "${id:0:8}" "$(sess_name "$slot")" "${title:-untitled}"
+    else
+      start_claude_in "$slot" "$id" "$title"
+      printf '  %-8s started in %s  (%s)\n' "${id:0:8}" "$(sess_name "$slot")" "${title:-untitled}"
+      started=$((started + 1))
+    fi
+    CONV_OF_SLOT[$slot]="$id"; SLOT_OF_CONV["$id"]=$slot; PID_OF_SLOT[$slot]=pending
+  done
+
+  printf 'summary: %s started, %s already live, %s unplaced\n' "$started" "$kept" "$nofit"
+  [ "$nofit" -eq 0 ] || echo "hint: claude-crew setup --slots $((SLOTS + nofit)), or stop a session" >&2
+
+  # `tmux send-keys` returns 0 as soon as tmux ACCEPTS the keystrokes. It says
+  # nothing about whether the command ran or the process survived. Counting that
+  # as "started" is how a run that launched nothing still reported five
+  # successes. Verify against the only thing that matters: a live process.
+  if [ "$dry" != 1 ] && [ "$started" -gt 0 ]; then
+    sleep 5
+    scan_slots
+    local live=0 dead=() rid
+    for row in "${rows[@]}"; do
+      IFS=$'\t' read -r rid _ <<<"$row"
+      [ -n "$rid" ] || continue
+      if [ -n "${SLOT_OF_CONV[$rid]:-}" ]; then live=$((live + 1)); else dead+=("${rid:0:8}"); fi
+    done
+    printf 'verify: %s/%s slots hold a live claude\n' "$live" "${#rows[@]}"
+    if [ "${#dead[@]}" -gt 0 ]; then
+      printf 'ERROR: no live process for: %s\n' "${dead[*]}" >&2
+      exit 4
+    fi
+  fi
+
+  # A slot holding a live conversation that is no longer in the newest $SLOTS is
+  # left alone — it is in use. Report it so the divergence is visible.
+  local m c
+  for ((m = 1; m <= SLOTS; m++)); do
+    c=${CONV_OF_SLOT[$m]:-}
+    [ -n "$c" ] || continue
+    grep -q "^$c" <<<"$(printf '%s\n' "${rows[@]}")" ||
+      printf 'note: %s holds %s, which is no longer in the newest %s\n' "$(sess_name "$m")" "${c:0:8}" "$SLOTS"
+  done
+}
+
+# Restart every slot WITHOUT killing the caller. Running `claude-crew start --force`
+# inline stops the calling session's own claude mid-turn and wedges its remote
+# control, so hand the job to systemd: the caller's shell is already gone when
+# the restart fires.
+#
+# Two properties are load-bearing, each learned the hard way:
+#   HOME=/root       systemd-run starts with a minimal env; `set -u` aborts on
+#                    an unset $HOME.
+#   unique unit name a transient unit can wedge in `loaded inactive dead` where
+#                    --collect never GCs it; a fixed name then fails forever
+#                    with "Unit already exists" (stop, reset-failed and
+#                    daemon-reload do not clear it).
+#
+# Do NOT swap systemd for setsid/nohup + sleep — that leaves a sleeping child
+# that can still be reaped along with the session.
+#
+# A clean journal does NOT mean it worked. Confirm with `claude-crew status` and the
+# `verify: N/N` line, never the exit code.
+cmd_restart() {
+  local delay="${1:-15}" unit="crew-restart-$(date +%s)"
+  systemd-run --on-active="$delay" --unit="$unit" --collect \
+    --setenv=HOME="$HOME" --property=KillMode=process \
+    "$CREW_DIR/bin/claude-crew" start --force
+  echo "scheduled $unit in ${delay}s"
+  echo "verify after it fires:  claude-crew status  &&  journalctl -u $unit | grep verify:"
+}
+
+# Put conversation B in A's slot. If B is already live in another slot, the two
+# conversations trade places; nothing is evicted. Otherwise A's conversation is
+# evicted and comes back on the next `claude-crew start` if it is still in the newest N.
+#
+# This is a kill-and-resume, never an in-band /resume. Switching a live session
+# from inside leaves remote control showing the old name while the messages
+# merge into one stream — observed 2026-09-02 switching Click Clack to
+# Discretionary Backtest Platform.
+cmd_switch() {
+  [ $# -eq 2 ] || die "switch: usage: claude-crew switch <slot-or-title> <conversation>"
+  scan_slots
+  local slot_a; slot_a=$(resolve_slot "$1")
+  local id_b title_b; IFS=$'\t' read -r id_b title_b < <(resolve_conv "$2")
+  local id_a="${CONV_OF_SLOT[$slot_a]:-}" title_a; title_a=$(title_of_slot "$slot_a")
+  local slot_b="${SLOT_OF_CONV[$id_b]:-}"
+
+  [ "$id_a" = "$id_b" ] && { echo "already: ${title_b:-${id_b:0:8}} is in $(sess_name "$slot_a")"; return 0; }
+
+  if [ -n "$slot_b" ]; then
+    echo "swapping $(sess_name "$slot_a") <-> $(sess_name "$slot_b")"
+    stop_claude_in "$slot_a"; stop_claude_in "$slot_b"
+    start_claude_in "$slot_a" "$id_b" "$title_b"
+    [ -n "$id_a" ] && start_claude_in "$slot_b" "$id_a" "$title_a"
+  else
+    echo "$(sess_name "$slot_a"): ${title_a:-${id_a:0:8}} -> ${title_b:-${id_b:0:8}}"
+    [ -n "$id_a" ] && echo "  evicting ${title_a:-${id_a:0:8}} (returns on the next claude-crew start)"
+    stop_claude_in "$slot_a"
+    start_claude_in "$slot_a" "$id_b" "$title_b"
+  fi
+
+  sleep 5
+  conv_is_live "$id_b" \
+    && echo "verify: ${title_b:-${id_b:0:8}} is live in $(sess_name "${SLOT_OF_CONV[$id_b]}")" \
+    || { echo "ERROR: ${id_b:0:8} did not come up in $(sess_name "$slot_a")" >&2; exit 4; }
+}
+
+# Type a prompt into a slot's running claude. This is a real prompt, not a
+# message: remote control regularly wedges at "pending" after a model or effort
+# change, and the tty always accepts input.
+cmd_prompt() {
+  [ $# -ge 2 ] || die "prompt: usage: claude-crew prompt <target> <text...>"
+  scan_slots
+  local n; n=$(resolve_slot "$1"); shift
+  # Guard hard. With shell-first panes, a slot whose claude has exited is
+  # sitting at a ROOT SHELL PROMPT, and send-keys would execute the prompt text
+  # as a command.
+  [ -n "${PID_OF_SLOT[$n]:-}" ] || die "$(sess_name "$n") has no running claude — refusing to type into its shell"
+  local text="$*"
+  # A literal newline submits the input box, so a multi-line prompt would be
+  # sent as several separate turns. Collapse to spaces and say so.
+  case "$text" in *$'\n'*) text=${text//$'\n'/ }; echo "note: newlines collapsed to spaces" >&2 ;; esac
+  tmux send-keys -t "$(sess_name "$n")" -l -- "$text"
+  sleep 0.4
+  tmux send-keys -t "$(sess_name "$n")" Enter
+  echo "prompted $(sess_name "$n") ($(title_of_slot "$n")): $text"
+}
+
+# Model and effort are launch flags, so changing one is the same primitive as
+# switch: stop the process, start it again on the same conversation. There is no
+# in-band round-trip to wedge.
+relaunch_with() {       # $1=target $2=model-or-empty $3=effort-or-empty
+  scan_slots
+  local n; n=$(resolve_slot "$1")
+  local id="${CONV_OF_SLOT[$n]:-}" title; title=$(title_of_slot "$n")
+  [ -n "$id" ] || die "$(sess_name "$n") holds no resumable conversation"
+  stop_claude_in "$n"
+  start_claude_in "$n" "$id" "$title" "$2" "$3"
+  sleep 5
+  conv_is_live "$id" \
+    && echo "verify: $(sess_name "$n") ($title) live on ${2:-$MODEL}/${3:-$EFFORT}" \
+    || { echo "ERROR: $(sess_name "$n") did not come back up" >&2; exit 4; }
+}
+
+cmd_model() {
+  [ $# -eq 2 ] || die "model: usage: claude-crew model <target> <model>"
+  relaunch_with "$1" "$2" ""
+}
+
+cmd_effort() {
+  [ $# -eq 2 ] || die "effort: usage: claude-crew effort <target> <low|medium|high|xhigh|max>"
+  case "$2" in low|medium|high|xhigh|max) ;; *) die "effort: must be low|medium|high|xhigh|max" ;; esac
+  relaunch_with "$1" "" "$2"
+}
+
+cmd_update() {
+  echo "current: $("$CLAUDE_BIN" --version)"
+  "$CLAUDE_BIN" install latest
+  echo "now:     $("$CLAUDE_BIN" --version)"
+  cmd_restart "${1:-15}"
+}
+
+# --- dispatch ----------------------------------------------------------------
+cmd="${1:-status}"; shift || true
+case "$cmd" in
+  setup)   cmd_setup "$@" ;;
+  status)  load_conf; cmd_status "$@" ;;
+  start)   load_conf; cmd_start "$@" ;;
+  restart) load_conf; cmd_restart "$@" ;;
+  switch)  load_conf; cmd_switch "$@" ;;
+  prompt)  load_conf; cmd_prompt "$@" ;;
+  model)   load_conf; cmd_model "$@" ;;
+  effort)  load_conf; cmd_effort "$@" ;;
+  update)  load_conf; cmd_update "$@" ;;
+  -h|--help|help) sed -n '2,/^set -euo/p' "$0" | sed 's/^# \{0,1\}//;$d' ;;
+  *) die "unknown command '$cmd' (try: crew --help)" ;;
+esac
