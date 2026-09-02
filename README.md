@@ -47,6 +47,7 @@ level cheap rather than destructive.
 |---|---|
 | `claude-crew setup [flags]` | Write or patch the config. Re-running with no flags keeps every value. |
 | `claude-crew status` | Slot → conversation map, plus any conversation with no slot. |
+| `claude-crew whoami` | Which slot is running the caller, and whether it is protected. |
 | `claude-crew start` | Fill free slots from the newest N conversations. |
 | `claude-crew start --dry-run` | Print the plan, launch nothing. |
 | `claude-crew restart [delay]` | Restart every slot via systemd, without killing the caller. |
@@ -59,6 +60,17 @@ level cheap rather than destructive.
 `<target>` is a slot number, a tmux session name, or a case-insensitive
 substring of a title. An ambiguous substring is refused with the list of
 matches, never guessed.
+
+## It will not let you kill yourself
+
+Every stop path is fatal when aimed at the slot you are running in. `switch`,
+`model`, `effort`, and `start --force` refuse when the target is your own
+session, and `whoami` tells you which one that is.
+
+The guard reads the process tree rather than tmux. Under systemd, cron, or a
+plain ssh shell there is no claude ancestor and it stays silent, which is how
+`restart` performs the same work an inline `start --force` is refused. Nothing
+distinguishes them but the calling context. `--self` overrides.
 
 ## Install
 
@@ -111,6 +123,12 @@ that invoked you. It killed a live session twice during development, and using
 it for launch verification means the check can pass while nothing started —
 the exact failure the check exists to catch. `claude-crew` reads argv from
 `/proc` for processes inside its own panes.
+
+**`send-keys` returning 0 is not delivery.** It means tmux accepted the
+keystrokes, not that claude was in a state to receive them. A session that is
+compacting swallows them silently while the command reports success. `prompt`
+now types without Enter, reads the pane back, and submits only once the text is
+visibly in the input box.
 
 **Rank by the last human turn, not file mtime.** A live session's hooks rewrite
 its transcript constantly, so merely being open keeps it at the top and a

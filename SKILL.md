@@ -39,6 +39,7 @@ when a bare `claude-crew` fails: `/root/.claude/skills/claude-crew/bin/claude-cr
 |---|---|
 | `claude-crew setup [flags]` | Write or patch `crew.conf`. Re-running with no flags keeps every value. |
 | `claude-crew status` | Slot → conversation map, plus any conversation with no slot. |
+| `claude-crew whoami` | Which slot is running the caller, and whether it is protected. |
 | `claude-crew start` | Fill free slots from the newest N conversations. |
 | `claude-crew start --dry-run` | Print the plan, launch nothing. |
 | `claude-crew restart [delay]` | Restart every slot via systemd, without killing the caller. |
@@ -70,6 +71,29 @@ remote control showing the old name while the messages merge into one stream,
 seen on 2026-09-02 switching Click Clack to Discretionary Backtest Platform.
 `claude-crew switch` kills and resumes instead, which is why it exists.
 
+## It will not let you kill yourself
+
+Every stop path is fatal when aimed at the slot you are running in: your claude
+gets SIGTERM, the turn dies mid-sentence, and remote control wedges. So
+`switch`, `model`, `effort`, and `start --force` refuse when the target is your
+own slot. `claude-crew whoami` shows which slot that is.
+
+```
+claude-crew model Claude2 sonnet
+crew: changing model or effort would stop the session you are running in (Claude2, 2b599c1a).
+     Use 'claude-crew restart', which detaches so the caller is already gone.
+     Pass --self to override.
+```
+
+The guard reads the process tree, not tmux, because `$TMUX` is not reliably
+exported into a tool call. Under systemd, cron, or a plain ssh shell there is no
+claude ancestor, so it stays silent — which is exactly how `claude-crew restart`
+keeps doing the same work that an inline `start --force` is refused. No flag
+distinguishes them; the calling context does.
+
+`--self` overrides it. The failure it prevents is total, so the override exists
+for a human who has decided, not for a script.
+
 ## Prompting another session
 
 `claude-crew prompt` types into the target's tty. Use it when remote control is wedged
@@ -85,6 +109,14 @@ root shell prompt, and the prompt text would be executed as a command.
 
 Newlines submit the input box, so a multi-line prompt would arrive as several
 separate turns. `claude-crew prompt` collapses them to spaces and says so.
+
+**It confirms delivery before submitting.** The text is typed without Enter, the
+pane is read back, and Enter is pressed only once the text is visibly in the
+input box. `tmux send-keys` returning 0 means tmux accepted the keystrokes, not
+that claude was in a state to receive them — a session that is compacting
+swallows them silently, which happened on 2026-09-02 and made the command report
+a delivery that never occurred. If the text does not appear, the partial line is
+cleared and nothing is submitted.
 
 ## Changing model or effort
 

@@ -28,6 +28,9 @@
 #   model  <target> <model>    relaunch that slot's conversation on a new model
 #   effort <target> <level>    relaunch that slot's conversation at a new effort
 #   update                     upgrade the claude binary, then restart
+#   whoami                     which slot is running the caller (guard input)
+#
+# Global flag: --self  allow a command to stop the caller's own slot.
 #
 # <target> is a slot number, a tmux session name, or a case-insensitive
 # substring of a conversation title ("click" finds "[VPS] Click Clack").
@@ -70,6 +73,11 @@ SHELL_CMD=bash
 CLAUDE_BIN=claude
 
 CONF_KEYS=(WORKDIR SLOTS MODEL EFFORT PERMISSION_MODE REMOTE_CONTROL TMUX_PREFIX SHELL_CMD CLAUDE_BIN)
+
+# Set by the global --self flag. Lets a caller deliberately stop its own slot,
+# which is otherwise refused. Off by default because the failure is total: the
+# turn that asked for it dies before it can report what happened.
+ALLOW_SELF=0
 
 die() { printf 'crew: %s\n' "$*" >&2; exit 1; }
 
@@ -268,6 +276,57 @@ scan_slots() {
     # A slot whose claude carries no --resume is live but holds no conversation.
     # It counts as busy (PID_OF_SLOT) but is not a parking space for a conv.
   done
+}
+
+# --- self-preservation ------------------------------------------------------
+# Which conversation is running the shell that invoked us, if any.
+#
+# Every stop path in this script is fatal when aimed at the caller's own slot:
+# the claude that is mid-turn gets SIGTERM, the turn dies, and its remote control
+# wedges. Detect it from the process tree rather than from tmux, because $TMUX
+# is not reliably exported into a tool call's environment.
+#
+# When crew runs from systemd, cron, or a plain ssh shell there is no claude
+# ancestor and this returns empty — which is exactly why `claude-crew restart`
+# keeps working while an inline `start --force` is refused. No flag needed to
+# tell the two apart.
+ppid_of() {
+  local s
+  s=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+  s=${s##*') '}                       # drop "pid (comm) ", comm may hold spaces
+  set -- $s                           # $1=state $2=ppid
+  [ -n "${2:-}" ] || return 1
+  printf '%s\n' "$2"
+}
+
+caller_conv() {
+  local p=$$ id guard=0
+  while [ "$p" -gt 1 ] && [ "$guard" -lt 40 ]; do
+    id=$(conv_of_pid "$p")
+    [ -n "$id" ] && { printf '%s\n' "$id"; return 0; }
+    p=$(ppid_of "$p") || return 0
+    guard=$((guard + 1))
+  done
+}
+
+SELF_CONV=""; SELF_SLOT=""
+detect_self() {                       # call AFTER scan_slots
+  SELF_CONV=$(caller_conv)
+  [ -n "$SELF_CONV" ] || return 0
+  SELF_SLOT="${SLOT_OF_CONV[$SELF_CONV]:-}"
+}
+
+# Refuse to stop the slot we are running inside. $1=slot, $2=what was asked.
+refuse_self() {
+  [ -n "$SELF_SLOT" ] || return 0
+  [ "$1" = "$SELF_SLOT" ] || return 0
+  [ "$ALLOW_SELF" = 1 ] && {
+    echo "warning: --self given; stopping the session you are running in" >&2
+    return 0
+  }
+  die "$2 would stop the session you are running in ($(sess_name "$1"), ${SELF_CONV:0:8}).
+     Use 'claude-crew restart', which detaches so the caller is already gone.
+     Pass --self to override."
 }
 
 free_slot() {           # lowest slot with no live claude at all
@@ -482,6 +541,27 @@ cmd_status() {
   done
 }
 
+# Which slot is running the caller. Exists so the self-preservation guard can be
+# checked without triggering it, and so a session can find itself in a fleet
+# where slot numbers move between restarts.
+cmd_whoami() {
+  scan_slots
+  detect_self
+  if [ -z "$SELF_CONV" ]; then
+    echo "not running inside a managed session (no claude ancestor)"
+    echo "  stop commands will not be refused"
+    return 0
+  fi
+  printf 'conversation  %s\n' "$SELF_CONV"
+  if [ -n "$SELF_SLOT" ]; then
+    printf 'slot          %s  %s\n' "$(sess_name "$SELF_SLOT")" "$(title_of_slot "$SELF_SLOT")"
+    printf 'protected     stop commands aimed at %s are refused without --self\n' "$(sess_name "$SELF_SLOT")"
+  else
+    echo "slot          none of the managed slots"
+    echo "protected     no, this session is outside the fleet"
+  fi
+}
+
 cmd_start() {
   local force=0 dry=0
   case "${1:-}" in
@@ -497,8 +577,13 @@ cmd_start() {
   local -a rows; mapfile -t rows < <(list_convs "$SLOTS")
   [ "${#rows[@]}" -gt 0 ] || die "no resumable conversations in $(projdir)"
   scan_slots
+  detect_self
 
   if [ "$force" = 1 ]; then
+    # --force stops every slot, so running it from inside one is always fatal to
+    # the caller. Under systemd there is no claude ancestor, SELF_SLOT is empty,
+    # and this does not fire — which is how `restart` gets to do the same work.
+    if [ -n "$SELF_SLOT" ]; then refuse_self "$SELF_SLOT" "start --force"; fi
     # Stop every slot up front, in a separate pass. Conversations move between
     # slots between runs, so stopping slot-by-slot as we launch would start the
     # new slot 1 while that same conversation is still live in slot 4 — two
@@ -622,10 +707,14 @@ cmd_restart() {
 cmd_switch() {
   [ $# -eq 2 ] || die "switch: usage: claude-crew switch <slot-or-title> <conversation>"
   scan_slots
+  detect_self
   local slot_a; slot_a=$(resolve_slot "$1")
+  refuse_self "$slot_a" "switch"
   local id_b title_b; IFS=$'\t' read -r id_b title_b < <(resolve_conv "$2")
   local id_a="${CONV_OF_SLOT[$slot_a]:-}" title_a; title_a=$(title_of_slot "$slot_a")
   local slot_b="${SLOT_OF_CONV[$id_b]:-}"
+  # A swap stops both slots, so the far side needs the same guard as the near one.
+  if [ -n "$slot_b" ]; then refuse_self "$slot_b" "switch"; fi
 
   [ "$id_a" = "$id_b" ] && { echo "already: ${title_b:-${id_b:0:8}} is in $(sess_name "$slot_a")"; return 0; }
 
@@ -653,18 +742,44 @@ cmd_switch() {
 cmd_prompt() {
   [ $# -ge 2 ] || die "prompt: usage: claude-crew prompt <target> <text...>"
   scan_slots
+  detect_self
   local n; n=$(resolve_slot "$1"); shift
+  # Prompting your own slot is not fatal, only confusing: the text queues behind
+  # the turn that sent it. Warn rather than refuse.
+  if [ -n "$SELF_SLOT" ] && [ "$n" = "$SELF_SLOT" ]; then
+    echo "note: that is the session you are running in; the prompt queues behind this turn" >&2
+  fi
   # Guard hard. With shell-first panes, a slot whose claude has exited is
   # sitting at a ROOT SHELL PROMPT, and send-keys would execute the prompt text
   # as a command.
   [ -n "${PID_OF_SLOT[$n]:-}" ] || die "$(sess_name "$n") has no running claude — refusing to type into its shell"
-  local text="$*"
+  local text="$*" s; s=$(sess_name "$n")
   # A literal newline submits the input box, so a multi-line prompt would be
   # sent as several separate turns. Collapse to spaces and say so.
   case "$text" in *$'\n'*) text=${text//$'\n'/ }; echo "note: newlines collapsed to spaces" >&2 ;; esac
-  tmux send-keys -t "$(sess_name "$n")" -l -- "$text"
-  sleep 0.4
-  tmux send-keys -t "$(sess_name "$n")" Enter
+
+  # Type the text WITHOUT submitting, then read the pane back to confirm it
+  # reached the input box before pressing Enter.
+  #
+  # `tmux send-keys` returning 0 means tmux accepted the keystrokes. It says
+  # nothing about whether claude was in a state to receive them: a session that
+  # is compacting, or mid-turn, swallows them silently. Submitting blind then
+  # reports a delivery that never happened — the same lie an exit code tells,
+  # and observed 2026-09-02 prompting a session that was auto-compacting on
+  # resume. The pane is the only feedback channel there is, so use it.
+  tmux send-keys -t "$s" -l -- "$text"
+  sleep 0.5
+  local needle seen
+  # Compare with all whitespace removed: the input box wraps long text across
+  # lines, so a literal match would fail on exactly the prompts worth checking.
+  needle=$(printf '%s' "$text" | tr -d '[:space:]' | cut -c1-40)
+  seen=$(tmux capture-pane -p -t "$s" | tr -d '[:space:]')
+  if [ -n "$needle" ] && [[ "$seen" != *"$needle"* ]]; then
+    tmux send-keys -t "$s" C-u        # clear the partial line rather than send it
+    die "$(sess_name "$n") did not accept the text — it is busy, compacting, or mid-turn.
+     Nothing was submitted. Try again once 'claude-crew status' shows it idle."
+  fi
+  tmux send-keys -t "$s" Enter
   echo "prompted $(sess_name "$n") ($(title_of_slot "$n")): $text"
 }
 
@@ -673,7 +788,9 @@ cmd_prompt() {
 # in-band round-trip to wedge.
 relaunch_with() {       # $1=target $2=model-or-empty $3=effort-or-empty
   scan_slots
+  detect_self
   local n; n=$(resolve_slot "$1")
+  refuse_self "$n" "changing model or effort"
   local id="${CONV_OF_SLOT[$n]:-}" title; title=$(title_of_slot "$n")
   [ -n "$id" ] || die "$(sess_name "$n") holds no resumable conversation"
   stop_claude_in "$n"
@@ -703,10 +820,18 @@ cmd_update() {
 }
 
 # --- dispatch ----------------------------------------------------------------
+# --self may appear anywhere; strip it before the subcommand sees the args.
+ARGS=()
+for a in "$@"; do
+  case "$a" in --self) ALLOW_SELF=1 ;; *) ARGS+=("$a") ;; esac
+done
+set -- ${ARGS[@]+"${ARGS[@]}"}
+
 cmd="${1:-status}"; shift || true
 case "$cmd" in
   setup)   cmd_setup "$@" ;;
   status)  load_conf; cmd_status "$@" ;;
+  whoami)  load_conf; cmd_whoami "$@" ;;
   start)   load_conf; cmd_start "$@" ;;
   restart) load_conf; cmd_restart "$@" ;;
   switch)  load_conf; cmd_switch "$@" ;;
@@ -715,5 +840,5 @@ case "$cmd" in
   effort)  load_conf; cmd_effort "$@" ;;
   update)  load_conf; cmd_update "$@" ;;
   -h|--help|help) sed -n '2,/^set -euo/p' "$0" | sed 's/^# \{0,1\}//;$d' ;;
-  *) die "unknown command '$cmd' (try: crew --help)" ;;
+  *) die "unknown command '$cmd' (try: claude-crew --help)" ;;
 esac
