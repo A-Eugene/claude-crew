@@ -24,7 +24,7 @@
 #   restart [delay]            restart every slot via systemd, WITHOUT killing
 #                              the caller (see the comment on cmd_restart)
 #   switch <A> <B>             put conversation B in A's slot; swap if B is live
-#   prompt <target> <text>     type a prompt into a slot's running claude
+#   prompt <target> <text>     type keystrokes into a slot's input box, verbatim
 #   model  <target> <model>    relaunch that slot's conversation on a new model
 #   effort <target> <level>    relaunch that slot's conversation at a new effort
 #   update                     upgrade the claude binary, then restart
@@ -892,11 +892,10 @@ cmd_prompt() {
   # Nothing is cleared on failure, and nothing needs to be. Failure here means
   # the box came back empty, so there is no leftover text to remove.
   #
-  # The previous version fired C-u to "clear the partial line". C-u does not
-  # clear this input box at all — verified 2026-09-03, 700 characters survived
-  # it untouched. C-c does clear it, but C-c on a session that has since started
-  # working interrupts that turn, so it is the wrong tool for a cleanup path
-  # that only ever runs when there is nothing to clean.
+  # Do not reach for C-u here. It does not clear this input box at all: 700
+  # characters survived it untouched, verified 2026-09-03. C-c does clear it,
+  # and also interrupts whatever turn the session has started since, so it is
+  # not a cleanup tool either.
   local after; after=$(input_box "$s")
   if [ -z "$after" ] || [ "$after" = "<<no-input-box>>" ]; then
     die "$(sess_name "$n") did not accept the text. Nothing was submitted."

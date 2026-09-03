@@ -16,15 +16,18 @@ claude-crew status
 
 ```
 slots (prefix Claude, workdir /root, opus/high/auto, remote-control on):
-  Claude1    74dc8897  Trading Research 2
-  Claude2    2b599c1a  VPS Management
+  Claude1    2b599c1a  VPS Management
+  Claude2    9d1dcf25  Web Ko Gedy
   Claude3    e3d089f9  Trading Research 1
   Claude4    6a2ae08d  Click Clack
-  Claude5    9d1dcf25  Web Ko Gedy
+  Claude5    065e1f12  Discretionary Backtest Platform
 newest 5 conversations:
-  2b599c1a in Claude2  VPS Management
-  065e1f12 UNPLACED    Discretionary Backtest Platform
+  2b599c1a in Claude1  VPS Management
+  74dc8897 UNPLACED    Trading Research 2
 ```
+
+`status` also flags a window whose label no longer matches what it runs, and any
+conversation two slots hold at once.
 
 ## The idea
 
@@ -140,10 +143,24 @@ the exact failure the check exists to catch. `claude-crew` reads argv from
 `/proc` for processes inside its own panes.
 
 **`send-keys` returning 0 is not delivery.** It means tmux accepted the
-keystrokes, not that claude was in a state to receive them. A session that is
-compacting swallows them silently while the command reports success. `prompt`
-now types without Enter, reads the pane back, and submits only once the text is
-visibly in the input box.
+keystrokes, not that claude was in a state to receive them. A compacting session
+swallows them silently while the command reports success. `prompt` reads the
+input box before typing and again after, and submits only once the box has gone
+from empty to non-empty.
+
+**Confirm delivery by emptiness, not by finding the text.** A long paste is
+collapsed to a placeholder, so past a few hundred characters none of the text is
+on screen and a text match fails on a perfectly idle session. Three prompts were
+reported as "busy" when length was the only problem.
+
+**Do not type into a box you have not looked at.** A draft someone left unsent
+sits in that box, and typing appends to it. `prompt` refuses when the box holds
+anything, and when the box is not on screen at all.
+
+**`C-u` does not clear this input box.** 700 characters survived it untouched.
+`C-c` clears it, and also interrupts a turn, so it is not a cleanup tool. There
+is no cleanup path: a failed delivery leaves the box empty, so there is nothing
+to remove.
 
 **argv says what a process was launched with, never what it is running now.**
 A session re-pointed from inside with `/resume` keeps its old `--resume` id, its

@@ -136,9 +136,9 @@ characters. That misreported three prompts as "busy" when length was the only
 problem. Emptiness does not care how long the text is.
 
 Nothing is cleared on failure, because failure means the box came back empty and
-there is nothing to clear. `C-u` does not clear this input box regardless: 700
-characters survived it untouched on 2026-09-03. `C-c` does clear it, and also
-interrupts a turn, so it is not a cleanup tool.
+there is nothing to clear. Do not add a cleanup step here. `C-u` does not clear
+this input box at all, 700 characters survived it untouched, and `C-c` clears it
+only by interrupting whatever turn the session has started since.
 
 A slot with no running claude is sitting at a root shell prompt, where the text
 would be executed as a command. That is refused too.
