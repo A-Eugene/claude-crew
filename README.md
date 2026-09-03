@@ -48,6 +48,7 @@ level cheap rather than destructive.
 | `claude-crew setup [flags]` | Write or patch the config. Re-running with no flags keeps every value. |
 | `claude-crew status` | Slot → conversation map, plus any conversation with no slot. |
 | `claude-crew whoami` | Which slot is running the caller, and whether it is protected. |
+| `claude-crew relabel` | Rename windows to match what each slot actually runs. |
 | `claude-crew start` | Fill free slots from the newest N conversations. |
 | `claude-crew start --dry-run` | Print the plan, launch nothing. |
 | `claude-crew restart [delay]` | Restart every slot via systemd, without killing the caller. |

@@ -40,6 +40,7 @@ when a bare `claude-crew` fails: `/root/.claude/skills/claude-crew/bin/claude-cr
 | `claude-crew setup [flags]` | Write or patch `crew.conf`. Re-running with no flags keeps every value. |
 | `claude-crew status` | Slot → conversation map, plus any conversation with no slot. |
 | `claude-crew whoami` | Which slot is running the caller, and whether it is protected. |
+| `claude-crew relabel` | Rename windows to match what each slot actually runs. |
 | `claude-crew start` | Fill free slots from the newest N conversations. |
 | `claude-crew start --dry-run` | Print the plan, launch nothing. |
 | `claude-crew restart [delay]` | Restart every slot via systemd, without killing the caller. |
@@ -166,6 +167,9 @@ by process id and follows the switch. `status` prints the real conversation,
 flags a window whose label has drifted, and flags any conversation that two
 slots hold at once. Two live processes on one transcript interleave their
 writes, so stop one as soon as it shows up.
+
+`claude-crew relabel` repairs the stale window names. Without it a drifted label
+persists until that slot is relaunched.
 
 ## The `pgrep -f` trap
 

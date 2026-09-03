@@ -29,6 +29,7 @@
 #   effort <target> <level>    relaunch that slot's conversation at a new effort
 #   update                     upgrade the claude binary, then restart
 #   whoami                     which slot is running the caller (guard input)
+#   relabel                    rename windows to match what each slot really runs
 #
 # Global flag: --self  allow a command to stop the caller's own slot.
 #
@@ -610,6 +611,34 @@ cmd_whoami() {
   fi
 }
 
+# Rename tmux windows to match the conversation each slot is actually running.
+#
+# The window name is written once, at launch. A slot re-pointed from inside with
+# /resume keeps the old label indefinitely, and nothing short of relaunching that
+# slot used to correct it — so a pane could read as one conversation while
+# running another for as long as it stayed up.
+cmd_relabel() {
+  scan_slots
+  local -a rows; mapfile -t rows < <(list_convs "$((SLOTS * 3))")
+  local n c cur real row rid rtitle changed=0
+  for ((n = 1; n <= SLOTS; n++)); do
+    c=${CONV_OF_SLOT[$n]:-}
+    [ -n "$c" ] || continue
+    cur=$(title_of_slot "$n"); real=""
+    for row in "${rows[@]}"; do
+      IFS=$'\t' read -r rid rtitle <<<"$row"
+      if [ "$rid" = "$c" ]; then real="$rtitle"; break; fi
+    done
+    [ -n "$real" ] || continue
+    [ "$real" = "$cur" ] && continue
+    tmux rename-window -t "$(sess_name "$n")" "$real"
+    printf '  %s: "%s" -> "%s"\n' "$(sess_name "$n")" "$cur" "$real"
+    changed=$((changed + 1))
+  done
+  if [ "$changed" -eq 0 ]; then echo "every window label already matches what it runs"; fi
+  return 0
+}
+
 cmd_start() {
   local force=0 dry=0
   case "${1:-}" in
@@ -880,6 +909,7 @@ case "$cmd" in
   setup)   cmd_setup "$@" ;;
   status)  load_conf; cmd_status "$@" ;;
   whoami)  load_conf; cmd_whoami "$@" ;;
+  relabel) load_conf; cmd_relabel "$@" ;;
   start)   load_conf; cmd_start "$@" ;;
   restart) load_conf; cmd_restart "$@" ;;
   switch)  load_conf; cmd_switch "$@" ;;
