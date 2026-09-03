@@ -130,6 +130,15 @@ compacting swallows them silently while the command reports success. `prompt`
 now types without Enter, reads the pane back, and submits only once the text is
 visibly in the input box.
 
+**argv says what a process was launched with, never what it is running now.**
+A session re-pointed from inside with `/resume` keeps its old `--resume` id, its
+old `-n` name, and its old tmux window name. Reading argv therefore reported the
+old conversation as live and the new one as unplaced, and a second claude got
+launched onto a conversation that already had one. The per-pid registry at
+`~/.claude/sessions/<pid>.json` follows the switch, so that is consulted first
+and argv is only the fallback. `status` also flags any conversation held by two
+slots.
+
 **Rank by the last human turn, not file mtime.** A live session's hooks rewrite
 its transcript constantly, so merely being open keeps it at the top and a
 throwaway holds its slot forever.

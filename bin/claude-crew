@@ -235,8 +235,26 @@ declare -A PID_OF_SLOT=()     # slot             -> that claude's pid
 # value is simply the element after `--resume` — no regex over a flattened
 # string, which is what let stray shell wrappers match earlier.
 conv_of_pid() {
-  local cl; cl=$(tr '\0' '\n' < "/proc/$1/cmdline" 2>/dev/null) || return 0
+  local cl reg id
+  cl=$(tr '\0' '\n' < "/proc/$1/cmdline" 2>/dev/null) || return 0
   grep -q "^${CLAUDE_BIN##*/}\$\|/${CLAUDE_BIN##*/}\$" <<<"$cl" || return 0
+
+  # Ask the per-pid session registry FIRST. It is keyed by process id and it
+  # follows an in-band conversation switch; argv only ever records what the
+  # process was LAUNCHED with.
+  #
+  # Trusting argv alone is how this went wrong on 2026-09-02: a slot was
+  # re-pointed from inside with /resume, argv and the tmux window name both kept
+  # saying the old conversation, so `status` reported the new one as UNPLACED and
+  # `start` launched a SECOND claude onto it. Two processes, one transcript —
+  # the exact hazard the rest of this file is written to avoid.
+  reg="$HOME/.claude/sessions/$1.json"
+  if [ -r "$reg" ]; then
+    id=$(python3 -c 'import json,sys
+try: print(json.load(open(sys.argv[1])).get("sessionId","") or "")
+except Exception: print("")' "$reg" 2>/dev/null) || id=""
+    if [ -n "$id" ]; then printf '%s\n' "$id"; return 0; fi
+  fi
   # No --resume in the cmdline is normal: a session started by hand holds no
   # conversation id. grep then exits 1, pipefail propagates it, and as the
   # function's last command `set -e` killed the whole script — silently, exit 1,
@@ -261,8 +279,10 @@ claude_pid_in() {
   done
 }
 
+declare -a DUPES=()      # "id slotA slotB" for a conversation held by two slots
+
 scan_slots() {
-  SLOT_OF_CONV=(); CONV_OF_SLOT=(); PID_OF_SLOT=()
+  SLOT_OF_CONV=(); CONV_OF_SLOT=(); PID_OF_SLOT=(); DUPES=()
   local n pid id
   for ((n = 1; n <= SLOTS; n++)); do
     pid=$(claude_pid_in "$n") || true
@@ -270,6 +290,12 @@ scan_slots() {
     PID_OF_SLOT[$n]="$pid"
     id=$(conv_of_pid "$pid")
     if [ -n "$id" ]; then
+      # Two live processes on one conversation interleave writes into a single
+      # transcript. Record it rather than letting the second one quietly
+      # overwrite the first in the map.
+      if [ -n "${SLOT_OF_CONV[$id]:-}" ]; then
+        DUPES+=("$id ${SLOT_OF_CONV[$id]} $n")
+      fi
       SLOT_OF_CONV["$id"]=$n
       CONV_OF_SLOT[$n]="$id"
     fi
@@ -514,7 +540,7 @@ cmd_setup() {
 cmd_status() {
   scan_slots
   local -a rows; mapfile -t rows < <(list_convs "$SLOTS")
-  local n c t pid
+  local n c t pid real row rid rtitle
   echo "slots (prefix $TMUX_PREFIX, workdir $WORKDIR, $MODEL/$EFFORT/$PERMISSION_MODE, remote-control $REMOTE_CONTROL):"
   for ((n = 1; n <= SLOTS; n++)); do
     if ! tmux has-session -t "$(sess_name "$n")" 2>/dev/null; then
@@ -522,13 +548,35 @@ cmd_status() {
     fi
     c=${CONV_OF_SLOT[$n]:-}; pid=${PID_OF_SLOT[$n]:-}; t=$(title_of_slot "$n")
     if [ -n "$c" ]; then
-      printf '  %-10s %s  %s\n' "$(sess_name "$n")" "${c:0:8}" "${t:-untitled}"
+      # The window name is set once at launch. A conversation switched in-band
+      # with /resume leaves it pointing at the old one, which is exactly what
+      # makes this class of mixup invisible. Show both when they disagree.
+      real=""
+      for row in "${rows[@]}"; do
+        IFS=$'\t' read -r rid rtitle <<<"$row"
+        [ "$rid" = "$c" ] && { real="$rtitle"; break; }
+      done
+      if [ -n "$real" ] && [ -n "$t" ] && [ "$real" != "$t" ]; then
+        printf '  %-10s %s  %s\n' "$(sess_name "$n")" "${c:0:8}" "$real"
+        printf '  %-10s %s\n' "" "!! window still labelled \"$t\" — renamed on the next start"
+      else
+        printf '  %-10s %s  %s\n' "$(sess_name "$n")" "${c:0:8}" "${real:-${t:-untitled}}"
+      fi
     elif [ -n "$pid" ]; then
       printf '  %-10s <claude running, no conversation id>  %s\n' "$(sess_name "$n")" "${t:-}"
     else
       printf '  %-10s <shell only — free>\n' "$(sess_name "$n")"
     fi
   done
+  if [ "${#DUPES[@]}" -gt 0 ]; then
+    echo "DUPLICATES — two live processes on one transcript:"
+    local d did da db
+    for d in "${DUPES[@]}"; do
+      read -r did da db <<<"$d"
+      printf '  %-8s is live in BOTH %s and %s — stop one\n' \
+        "${did:0:8}" "$(sess_name "$da")" "$(sess_name "$db")"
+    done
+  fi
   echo "newest $SLOTS conversations:"
   local id title
   for row in "${rows[@]}"; do

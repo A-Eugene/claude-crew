@@ -154,6 +154,19 @@ its own gate.
 
 `crew.conf` is gitignored and no install step may overwrite it.
 
+## A slot can be running something other than its label
+
+`/resume` from inside a pane switches that session's conversation without
+touching argv, the `-n` display name, or the tmux window name. All three keep
+naming the conversation it started on, so the pane reads as one thing while
+running another.
+
+`claude-crew` resolves this from `~/.claude/sessions/<pid>.json`, which is keyed
+by process id and follows the switch. `status` prints the real conversation,
+flags a window whose label has drifted, and flags any conversation that two
+slots hold at once. Two live processes on one transcript interleave their
+writes, so stop one as soon as it shows up.
+
 ## The `pgrep -f` trap
 
 `pgrep -f` and `pkill -f` match against a flattened command line, so a pattern
