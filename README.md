@@ -53,7 +53,7 @@ level cheap rather than destructive.
 | `claude-crew start --dry-run` | Print the plan, launch nothing. |
 | `claude-crew restart [delay]` | Restart every slot via systemd, without killing the caller. |
 | `claude-crew switch <A> <B>` | Put conversation B in A's slot. Swaps if B is already live. |
-| `claude-crew prompt <target> <text>` | Type a real prompt into that slot's running claude. |
+| `claude-crew prompt <target> <text>` | Type keystrokes into that slot's input box. Not a messaging channel — see below. |
 | `claude-crew model <target> <model>` | Relaunch that conversation on a different model. |
 | `claude-crew effort <target> <level>` | Relaunch it at a different effort level. |
 | `claude-crew update` | Upgrade the claude binary, then restart. |
@@ -61,6 +61,19 @@ level cheap rather than destructive.
 `<target>` is a slot number, a tmux session name, or a case-insensitive
 substring of a title. An ambiguous substring is refused with the list of
 matches, never guessed.
+
+## `prompt` is a keyboard, not a message bus
+
+`claude-crew prompt` types raw keystrokes into a tty, so what it delivers lands
+in the receiver's input box indistinguishable from the user typing it. There is
+no wrapper and no attribution, so the receiving session cannot tell a peer sent
+it and cannot apply the caution it would apply to a peer. Routing a request this
+way launders it into looking like the user's own words.
+
+Use it when the mechanism is the point: an interface is wedged, a slash command
+has to run inside a session, a keystroke has to reach a tty nothing else can
+reach. If you want to ask another agent to do something, use your harness's
+inter-agent messaging instead, which keeps the sender's identity attached.
 
 ## It will not let you kill yourself
 

@@ -3,13 +3,15 @@ name: claude-crew
 description: >-
   Manage the tmux fleet of Claude Code sessions on this host: start them,
   restart them, move a conversation into a different slot, change a session's
-  model or effort, or type a prompt into another session's input box. Use when
-  asked to start/restart the claudes, switch a session, see which conversation
-  is in which tmux slot, prompt or message another session, change a running
-  session's model or effort level, or upgrade the claude binary. Triggers: crew,
-  restart the claudes, start the claudes, which session is in which slot, switch
-  TR1 to Click Clack, prompt the other session, tell Claude3 to, change slot 2 to
-  sonnet, bump effort to xhigh, update claude code.
+  model or effort, or type keystrokes into a session's terminal input box. Use
+  when asked to start/restart the claudes, switch a session, see which
+  conversation is in which tmux slot, change a running session's model or effort
+  level, or upgrade the claude binary. Triggers: crew, claude-crew, restart the
+  claudes, start the claudes, which session is in which slot, switch TR1 to Click
+  Clack, change slot 2 to sonnet, bump effort to xhigh, update claude code, type
+  this into Claude3's input box. NOT for messaging, telling, or sending anything
+  to another agent, and not for asking a peer to do something — that is
+  SendMessage. This skill drives a terminal, not a conversation.
 ---
 
 # claude-crew
@@ -95,10 +97,24 @@ distinguishes them; the calling context does.
 `--self` overrides it. The failure it prevents is total, so the override exists
 for a human who has decided, not for a script.
 
-## Prompting another session
+## Typing into another session's input box
 
-`claude-crew prompt` types into the target's tty. Use it when remote control is wedged
-at a pending message, which happens routinely after a model or effort change.
+**This is not a way to message a peer. Use `SendMessage` for that.**
+
+`SendMessage` delivers to a peer wrapped and labelled as coming from another
+session, which is what lets the receiver tell a teammate's request apart from
+its own user's instruction, and refuse to treat it as approval.
+
+`claude-crew prompt` types raw keystrokes into a tty. Whatever it delivers
+arrives in the receiver's input box **indistinguishable from the user typing**,
+with no wrapper and no attribution. The receiver has no way to know a peer sent
+it, so it cannot apply the caution it would apply to a peer. Anything routed
+this way is laundered into looking like the user's own words.
+
+So reach for it only when the mechanism is the point: remote control is wedged
+at a pending message, a session needs a slash command run in it, or a keystroke
+has to reach a tty that nothing else can reach. Never reach for it because a
+peer needs telling something.
 
 ```
 claude-crew prompt "Trading Research 1" "re-read the vault index before answering"
