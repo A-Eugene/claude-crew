@@ -816,6 +816,32 @@ cmd_switch() {
 # Type a prompt into a slot's running claude. This is a real prompt, not a
 # message: remote control regularly wedges at "pending" after a model or effort
 # change, and the tty always accepts input.
+# What is currently sitting in a slot's input box.
+#
+# Prints "" when the box is empty, the draft text when it holds one, and
+# "<<no-input-box>>" when the box is not drawn at all, which is how a session
+# mid-turn or compacting appears. The box is the region between the last two
+# horizontal rules on screen, so this survives wrapping, resizing, and a long
+# paste being collapsed to a placeholder.
+input_box() {
+  local tmp; tmp=$(mktemp)
+  tmux capture-pane -p -t "$1" > "$tmp" 2>/dev/null || true
+  python3 - "$tmp" <<'PY'
+import sys, re
+lines = [l.rstrip("\n") for l in open(sys.argv[1], encoding="utf-8", errors="replace")]
+rules = [i for i, l in enumerate(lines) if re.match(r"^\s*[─—]{6,}", l)]
+if len(rules) < 2:
+    print("<<no-input-box>>"); raise SystemExit
+body = " ".join(lines[rules[-2] + 1: rules[-1]]).strip()
+if body.startswith("❯"):                 # the prompt chevron
+    body = body[1:].strip()
+if body in ("Press up to edit queued messages",):   # shown while the box is empty
+    body = ""
+print(body)
+PY
+  rm -f "$tmp"
+}
+
 cmd_prompt() {
   [ $# -ge 2 ] || die "prompt: usage: claude-crew prompt <target> <text...>"
   scan_slots
@@ -835,26 +861,45 @@ cmd_prompt() {
   # sent as several separate turns. Collapse to spaces and say so.
   case "$text" in *$'\n'*) text=${text//$'\n'/ }; echo "note: newlines collapsed to spaces" >&2 ;; esac
 
-  # Type the text WITHOUT submitting, then read the pane back to confirm it
-  # reached the input box before pressing Enter.
+  # Look at the input box BEFORE typing anything. Two things must hold, and
+  # neither can be assumed.
   #
-  # `tmux send-keys` returning 0 means tmux accepted the keystrokes. It says
-  # nothing about whether claude was in a state to receive them: a session that
-  # is compacting, or mid-turn, swallows them silently. Submitting blind then
-  # reports a delivery that never happened — the same lie an exit code tells,
-  # and observed 2026-09-02 prompting a session that was auto-compacting on
-  # resume. The pane is the only feedback channel there is, so use it.
+  # The box must be on screen, or the session is mid-turn and swallows the
+  # keystrokes. And it must be EMPTY: a draft someone left unsent is not ours to
+  # type over, and not ours to clear.
+  local before; before=$(input_box "$s")
+  case "$before" in
+    "<<no-input-box>>")
+      die "$(sess_name "$n") has no input box on screen — it is mid-turn or compacting.
+     Nothing was typed. Try again once it is idle." ;;
+    "") ;;
+    *)
+      die "$(sess_name "$n") has an unsent draft in its input box:
+       \"$before\"
+     Refusing to type over it. Nothing was typed." ;;
+  esac
+
   tmux send-keys -t "$s" -l -- "$text"
   sleep 0.5
-  local needle seen
-  # Compare with all whitespace removed: the input box wraps long text across
-  # lines, so a literal match would fail on exactly the prompts worth checking.
-  needle=$(printf '%s' "$text" | tr -d '[:space:]' | cut -c1-40)
-  seen=$(tmux capture-pane -p -t "$s" | tr -d '[:space:]')
-  if [ -n "$needle" ] && [[ "$seen" != *"$needle"* ]]; then
-    tmux send-keys -t "$s" C-u        # clear the partial line rather than send it
-    die "$(sess_name "$n") did not accept the text — it is busy, compacting, or mid-turn.
-     Nothing was submitted. Try again once 'claude-crew status' shows it idle."
+
+  # Confirm by asking whether the box went from empty to non-empty, NOT by
+  # looking for the text.
+  #
+  # Matching the text cannot work. The interface collapses a long paste to a
+  # placeholder, so past a few hundred characters none of it is on screen and a
+  # text match fails on a perfectly idle session — reported three times as
+  # "busy" when length was the only problem. Emptiness is length-independent.
+  # Nothing is cleared on failure, and nothing needs to be. Failure here means
+  # the box came back empty, so there is no leftover text to remove.
+  #
+  # The previous version fired C-u to "clear the partial line". C-u does not
+  # clear this input box at all — verified 2026-09-03, 700 characters survived
+  # it untouched. C-c does clear it, but C-c on a session that has since started
+  # working interrupts that turn, so it is the wrong tool for a cleanup path
+  # that only ever runs when there is nothing to clean.
+  local after; after=$(input_box "$s")
+  if [ -z "$after" ] || [ "$after" = "<<no-input-box>>" ]; then
+    die "$(sess_name "$n") did not accept the text. Nothing was submitted."
   fi
   tmux send-keys -t "$s" Enter
   echo "prompted $(sess_name "$n") ($(title_of_slot "$n")): $text"

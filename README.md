@@ -64,16 +64,17 @@ matches, never guessed.
 
 ## `prompt` is a keyboard, not a message bus
 
-`claude-crew prompt` types raw keystrokes into a tty, so what it delivers lands
-in the receiver's input box indistinguishable from the user typing it. There is
-no wrapper and no attribution, so the receiving session cannot tell a peer sent
-it and cannot apply the caution it would apply to a peer. Routing a request this
-way launders it into looking like the user's own words.
+If your harness has inter-agent messaging, the two differ in what travels with
+the words. Messaging merges context: the sender's working context rides along
+and lands in the receiver's history reading as the receiver's own material. Use
+it when you need the peer to acknowledge or reply.
 
-Use it when the mechanism is the point: an interface is wedged, a slash command
-has to run inside a session, a keystroke has to reach a tty nothing else can
-reach. If you want to ask another agent to do something, use your harness's
-inter-agent messaging instead, which keeps the sender's identity attached.
+`claude-crew prompt` types keystrokes into a tty. The words arrive exactly as
+given, with no sender context and no authorship, as though typed at that
+keyboard. Use it to unstick a session waiting at a pending message, or to hand
+over context deliberately without authorship attached.
+
+It adds nothing to what you pass it, on purpose.
 
 ## It will not let you kill yourself
 

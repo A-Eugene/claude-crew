@@ -6,12 +6,14 @@ description: >-
   model or effort, or type keystrokes into a session's terminal input box. Use
   when asked to start/restart the claudes, switch a session, see which
   conversation is in which tmux slot, change a running session's model or effort
-  level, or upgrade the claude binary. Triggers: crew, claude-crew, restart the
-  claudes, start the claudes, which session is in which slot, switch TR1 to Click
-  Clack, change slot 2 to sonnet, bump effort to xhigh, update claude code, type
-  this into Claude3's input box. NOT for messaging, telling, or sending anything
-  to another agent, and not for asking a peer to do something — that is
-  SendMessage. This skill drives a terminal, not a conversation.
+  level, upgrade the claude binary, unstick a session waiting at a pending
+  message, or put text into another session's input box exactly as typed.
+  Triggers: crew, claude-crew, restart the claudes, start the claudes, which
+  conversation is in which slot, switch TR1 to Click Clack, change slot 2 to
+  sonnet, bump effort to xhigh, update claude code, type this into Claude3,
+  unstick a stuck session. To reach a peer when you need it to acknowledge or
+  reply, use SendMessage instead: that carries the sender's context and identity.
+  `claude-crew prompt` carries neither, by design.
 ---
 
 # claude-crew
@@ -99,41 +101,50 @@ for a human who has decided, not for a script.
 
 ## Typing into another session's input box
 
-**This is not a way to message a peer. Use `SendMessage` for that.**
+Two routes reach another session, and they differ in what travels with the words.
 
-`SendMessage` delivers to a peer wrapped and labelled as coming from another
-session, which is what lets the receiver tell a teammate's request apart from
-its own user's instruction, and refuse to treat it as approval.
+**`SendMessage` is for when you need acknowledgement.** A reply, a decision, one
+session acting as another's peer. It merges the two sessions' context: the
+sender's working context rides along and lands in the receiver's history, where
+it reads as the receiver's own material. A plaintalk sync sent from a trading
+session put trading content into a mahjong app's history exactly that way on
+2026-09-02.
 
-`claude-crew prompt` types raw keystrokes into a tty. Whatever it delivers
-arrives in the receiver's input box **indistinguishable from the user typing**,
-with no wrapper and no attribution. The receiver has no way to know a peer sent
-it, so it cannot apply the caution it would apply to a peer. Anything routed
-this way is laundered into looking like the user's own words.
+**`claude-crew prompt` is for when you do not.** It types keystrokes into a tty.
+The words arrive exactly as given, with no sender context and no authorship, as
+though typed at that keyboard. Use it to unstick a session sitting at a pending
+message, or to hand over context deliberately without authorship attached.
 
-So reach for it only when the mechanism is the point: remote control is wedged
-at a pending message, a session needs a slash command run in it, or a keystroke
-has to reach a tty that nothing else can reach. Never reach for it because a
-peer needs telling something.
+It adds nothing to what you pass it. Do not prepend a "from" line unless the
+caller asked for one — carrying no authorship is the point, and the caller can
+put attribution in the text when they want it there.
 
 ```
 claude-crew prompt "Trading Research 1" "re-read the vault index before answering"
+claude-crew prompt 2 "status on the ingest queue?"
 ```
 
-It refuses when the target slot has no running claude. That guard is load
-bearing: with shell-first panes, a slot whose claude has exited is sitting at a
-root shell prompt, and the prompt text would be executed as a command.
+**It reads the input box before typing, and refuses twice over.** If the box is
+not on screen the session is mid-turn and would swallow the keystrokes. If the
+box already holds text, someone has an unsent draft there and it is not ours to
+type over. Either way nothing is typed.
 
-Newlines submit the input box, so a multi-line prompt would arrive as several
-separate turns. `claude-crew prompt` collapses them to spaces and says so.
+**Delivery is confirmed by the box going from empty to non-empty, not by finding
+the text.** A long paste is collapsed to a placeholder, so matching the text
+fails on a perfectly idle session once the prompt passes a few hundred
+characters. That misreported three prompts as "busy" when length was the only
+problem. Emptiness does not care how long the text is.
 
-**It confirms delivery before submitting.** The text is typed without Enter, the
-pane is read back, and Enter is pressed only once the text is visibly in the
-input box. `tmux send-keys` returning 0 means tmux accepted the keystrokes, not
-that claude was in a state to receive them — a session that is compacting
-swallows them silently, which happened on 2026-09-02 and made the command report
-a delivery that never occurred. If the text does not appear, the partial line is
-cleared and nothing is submitted.
+Nothing is cleared on failure, because failure means the box came back empty and
+there is nothing to clear. `C-u` does not clear this input box regardless: 700
+characters survived it untouched on 2026-09-03. `C-c` does clear it, and also
+interrupts a turn, so it is not a cleanup tool.
+
+A slot with no running claude is sitting at a root shell prompt, where the text
+would be executed as a command. That is refused too.
+
+Newlines submit the box, so a multi-line prompt would arrive as several separate
+turns. They are collapsed to spaces and the command says so.
 
 ## Changing model or effort
 
