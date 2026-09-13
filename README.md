@@ -55,6 +55,8 @@ level cheap rather than destructive.
 | `claude-crew start` | Fill free slots from the newest N conversations. |
 | `claude-crew start --dry-run` | Print the plan, launch nothing. |
 | `claude-crew restart [delay]` | Restart every slot via systemd, without killing the caller. |
+| `claude-crew new "<title>" [--slot <n> [--force]]` | Start a brand new conversation in the first free slot, or in slot n. `--force` stops what slot n runs. |
+| `claude-crew delete <conversation> [--yes]` | Stop it if live, then delete its transcript and sidecar directory. Without `--yes` it only prints what would go. There is no backup. |
 | `claude-crew switch <A> <B>` | Put conversation B in A's slot. Swaps if B is already live. |
 | `claude-crew prompt <target> <text>` | Type keystrokes into that slot's input box. Not a messaging channel — see below. |
 | `claude-crew model <target> <model>` | Relaunch that conversation on a different model. |
@@ -82,13 +84,16 @@ It adds nothing to what you pass it, on purpose.
 ## It will not let you kill yourself
 
 Every stop path is fatal when aimed at the slot you are running in. `switch`,
-`model`, `effort`, and `start --force` refuse when the target is your own
-session, and `whoami` tells you which one that is.
+`model`, `effort`, `start --force`, and `new --slot <n> --force` refuse when the
+target is your own session, and `whoami` tells you which one that is.
 
 The guard reads the process tree rather than tmux. Under systemd, cron, or a
 plain ssh shell there is no claude ancestor and it stays silent, which is how
 `restart` performs the same work an inline `start --force` is refused. Nothing
 distinguishes them but the calling context. `--self` overrides.
+
+`delete` refuses your own conversation with no override, because a deleted
+transcript cannot be brought back.
 
 ## Install
 

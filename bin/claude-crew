@@ -23,6 +23,10 @@
 #   start [--force|--dry-run]  fill free slots from the newest N conversations
 #   restart [delay]            restart every slot via systemd, WITHOUT killing
 #                              the caller (see the comment on cmd_restart)
+#   new "<title>" [--slot <n> [--force]]
+#                              start a brand new conversation in a free slot
+#   delete <conversation> [--yes]
+#                              stop it if live, then delete its transcript for good
 #   switch <A> <B>             put conversation B in A's slot; swap if B is live
 #   prompt <target> <text>     type keystrokes into a slot's input box, verbatim
 #   model  <target> <model>    relaunch that slot's conversation on a new model
@@ -31,7 +35,8 @@
 #   whoami                     which slot is running the caller (guard input)
 #   relabel                    rename windows to match what each slot really runs
 #
-# Global flag: --self  allow a command to stop the caller's own slot.
+# Global flag: --self  allow a command to stop the caller's own slot. `delete`
+#                      ignores it: the caller's own conversation is never deleted.
 #
 # <target> is a slot number, a tmux session name, or a case-insensitive
 # substring of a conversation title ("click" finds "[VPS] Click Clack").
@@ -773,6 +778,183 @@ cmd_restart() {
   echo "verify after it fires:  claude-crew status  &&  journalctl -u $unit | grep verify:"
 }
 
+# Start a brand new conversation. There is nothing to --resume, so the launch is
+# verified by a live claude process in the slot. conv_is_live cannot be used:
+# it looks up a conversation id, and this one has none until claude writes it.
+cmd_new() {
+  local usage='new: usage: claude-crew new "<title>" [--slot <n> [--force]]'
+  local title="" slot="" force=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --slot)
+        [ $# -ge 2 ] || die "$usage"
+        slot="$2"; shift 2 ;;
+      --force) force=1; shift ;;
+      -*) die "new: unknown flag $1" ;;
+      *)
+        [ -z "$title" ] || die "$usage"
+        title="$1"; shift ;;
+    esac
+  done
+  [ -n "$title" ] || die "$usage"
+  if [ "$force" = 1 ] && [ -z "$slot" ]; then die "new: --force only applies together with --slot"; fi
+
+  scan_slots
+  detect_self
+  if [ -n "$slot" ]; then
+    if ! [[ "$slot" =~ ^[0-9]+$ ]] || [ "$slot" -lt 1 ] || [ "$slot" -gt "$SLOTS" ]; then
+      die "new: --slot must be a number from 1 to $SLOTS"
+    fi
+    if [ -n "${PID_OF_SLOT[$slot]:-}" ]; then
+      [ "$force" = 1 ] || die "new: $(sess_name "$slot") is busy ($(title_of_slot "$slot")).
+     Pass --force to stop it, or leave out --slot to use a free slot."
+      refuse_self "$slot" "new --force"
+      echo "stopping $(sess_name "$slot") ($(title_of_slot "$slot"))"
+      stop_claude_in "$slot"
+      # Typing into a pane whose old claude is still alive would hand the new
+      # command to that claude's input box instead of the shell.
+      [ -z "$(claude_pid_in "$slot")" ] || die "new: the old claude in $(sess_name "$slot") is still alive. Nothing was started."
+    fi
+  else
+    slot=$(free_slot)
+    if [ -z "$slot" ]; then
+      echo "crew: new: NO FREE SLOT — all $SLOTS are busy" >&2
+      echo "hint: claude-crew setup --slots $((SLOTS + 1)), or stop a session, or pass --slot <n> --force" >&2
+      exit 1
+    fi
+  fi
+
+  start_claude_in "$slot" "" "$title"
+  echo "started \"$title\" in $(sess_name "$slot")"
+  sleep 5
+  local pid id
+  pid=$(claude_pid_in "$slot")
+  if [ -z "$pid" ]; then
+    echo "ERROR: no live claude in $(sess_name "$slot")" >&2
+    exit 4
+  fi
+  id=$(conv_of_pid "$pid")
+  printf 'verify: %s holds a live claude (pid %s, conversation %s)\n' \
+    "$(sess_name "$slot")" "$pid" "${id:-not written yet}"
+}
+
+# Every live claude pid whose session registry names conversation $1, inside the
+# fleet or not. The registry is keyed by pid, so this also finds a claude running
+# in a plain terminal that no slot knows about.
+live_pids_of_conv() {
+  local f pid
+  for f in "$HOME"/.claude/sessions/*.json; do
+    [ -e "$f" ] || continue
+    pid=${f##*/}; pid=${pid%.json}
+    [[ "$pid" =~ ^[0-9]+$ ]] || continue
+    [ -r "/proc/$pid/cmdline" ] || continue
+    if [ "$(conv_of_pid "$pid")" = "$1" ]; then echo "$pid"; fi
+  done
+}
+
+# Delete a conversation for good: its transcript and its sidecar directory
+# (tool-results, subagents, custom-title.json). There is no backup, so a bare
+# run only prints what would go, and --yes is required to act.
+cmd_delete() {
+  local usage='delete: usage: claude-crew delete <conversation> [--yes]'
+  local target="" yes=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --yes) yes=1; shift ;;
+      -*) die "delete: unknown flag $1" ;;
+      *)
+        [ -z "$target" ] || die "$usage"
+        target="$1"; shift ;;
+    esac
+  done
+  [ -n "$target" ] || die "$usage"
+
+  scan_slots
+  detect_self
+  local row id title
+  row=$(resolve_conv "$target")
+  IFS=$'\t' read -r id title <<<"$row"
+  # The id becomes part of an `rm -rf` path. An empty or odd id would point that
+  # at the whole transcript store.
+  [[ "$id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] ||
+    die "delete: '$id' is not a conversation id. Nothing was deleted."
+
+  local pd file side
+  pd=$(projdir)
+  file="$pd/$id.jsonl"
+  side="$pd/$id"
+  [ -f "$file" ] || die "delete: no transcript at $file"
+
+  # No --self escape here. A stopped session can be started again. A deleted
+  # transcript cannot.
+  if [ -n "$SELF_CONV" ] && [ "$id" = "$SELF_CONV" ]; then
+    die "delete: $id (${title:-untitled}) is the conversation you are running in.
+     Refusing. --self does not apply to delete."
+  fi
+
+  printf 'conversation  %s\n' "$id"
+  printf 'title         %s\n' "${title:-untitled}"
+  printf 'transcript    %s  (%s bytes)\n' "$file" "$(stat -c %s "$file")"
+  if [ -d "$side" ]; then
+    printf 'sidecar dir   %s/  (%s bytes)\n' "$side" "$(du -sb "$side" | cut -f1)"
+  else
+    printf 'sidecar dir   none\n'
+  fi
+
+  # A claude outside the fleet is not ours to stop. Deleting under it would
+  # leave it appending to a transcript that no longer exists.
+  local p n managed outside=()
+  for p in $(live_pids_of_conv "$id"); do
+    managed=0
+    for ((n = 1; n <= SLOTS; n++)); do
+      if [ "${PID_OF_SLOT[$n]:-}" = "$p" ]; then managed=1; fi
+    done
+    if [ "$managed" = 0 ]; then outside+=("$p"); fi
+  done
+  if [ "${#outside[@]}" -gt 0 ]; then
+    die "delete: it is live outside the managed slots (pid ${outside[*]}).
+     Stop that claude yourself first. Nothing was deleted."
+  fi
+
+  local slot="${SLOT_OF_CONV[$id]:-}"
+  if [ -n "$slot" ]; then
+    printf 'live in       %s (pid %s), stopped before deleting\n' "$(sess_name "$slot")" "${PID_OF_SLOT[$slot]}"
+  else
+    printf 'live in       no slot\n'
+  fi
+
+  if [ "$yes" != 1 ]; then
+    echo "nothing deleted. Run again with --yes to delete it permanently. There is no backup."
+    return 0
+  fi
+
+  # Loop, because a conversation held by two slots at once (see DUPES) is
+  # listed under only one of them per scan.
+  local pid tries=0
+  while conv_is_live "$id"; do
+    slot=${SLOT_OF_CONV[$id]}
+    if [ "$slot" = "${SELF_SLOT:-}" ]; then
+      die "delete: $(sess_name "$slot") is the session you are running in. Nothing was deleted."
+    fi
+    pid=${PID_OF_SLOT[$slot]}
+    echo "stopping $(sess_name "$slot") (pid $pid)"
+    stop_claude_in "$slot"
+    if kill -0 "$pid" 2>/dev/null; then
+      die "delete: pid $pid in $(sess_name "$slot") did not exit. Nothing was deleted."
+    fi
+    tmux rename-window -t "$(sess_name "$slot")" "$(sess_name "$slot")" 2>/dev/null || true
+    tries=$((tries + 1))
+    [ "$tries" -le "$SLOTS" ] || die "delete: $id is still live after stopping $tries slots. Nothing was deleted."
+  done
+
+  rm -f -- "$file"
+  if [ -d "$side" ]; then rm -rf -- "$side"; fi
+  if [ -e "$file" ] || [ -e "$side" ]; then
+    die "delete: something is left behind under $pd for $id"
+  fi
+  echo "deleted $id (${title:-untitled})"
+}
+
 # Put conversation B in A's slot. If B is already live in another slot, the two
 # conversations trade places; nothing is evicted. Otherwise A's conversation is
 # evicted and comes back on the next `claude-crew start` if it is still in the newest N.
@@ -956,6 +1138,8 @@ case "$cmd" in
   relabel) load_conf; cmd_relabel "$@" ;;
   start)   load_conf; cmd_start "$@" ;;
   restart) load_conf; cmd_restart "$@" ;;
+  new)     load_conf; cmd_new "$@" ;;
+  delete)  load_conf; cmd_delete "$@" ;;
   switch)  load_conf; cmd_switch "$@" ;;
   prompt)  load_conf; cmd_prompt "$@" ;;
   model)   load_conf; cmd_model "$@" ;;

@@ -2,13 +2,15 @@
 name: claude-crew
 description: >-
   Manage the tmux fleet of Claude Code sessions on this host: start them,
-  restart them, move a conversation into a different slot, change a session's
-  model or effort, or type keystrokes into a session's terminal input box. Use
+  restart them, start a brand new conversation, delete a conversation for good,
+  move a conversation into a different slot, change a session's model or effort,
+  or type keystrokes into a session's terminal input box. Use
   when asked to start/restart the claudes, switch a session, see which
   conversation is in which tmux slot, change a running session's model or effort
   level, upgrade the claude binary, unstick a session waiting at a pending
   message, or put text into another session's input box exactly as typed.
-  Triggers: crew, claude-crew, restart the claudes, start the claudes, which
+  Triggers: crew, claude-crew, restart the claudes, start the claudes, new
+  claude session, delete a conversation, which
   conversation is in which slot, switch TR1 to Click Clack, change slot 2 to
   sonnet, bump effort to xhigh, update claude code, type this into Claude3,
   unstick a stuck session. To reach a peer when you need it to acknowledge or
@@ -48,6 +50,8 @@ when a bare `claude-crew` fails: `/root/.claude/skills/claude-crew/bin/claude-cr
 | `claude-crew start` | Fill free slots from the newest N conversations. |
 | `claude-crew start --dry-run` | Print the plan, launch nothing. |
 | `claude-crew restart [delay]` | Restart every slot via systemd, without killing the caller. |
+| `claude-crew new "<title>" [--slot <n> [--force]]` | Start a brand new conversation in the first free slot, or in slot n. `--force` stops what slot n runs. |
+| `claude-crew delete <conversation> [--yes]` | Stop it if live, then delete its transcript and sidecar directory. Without `--yes` it only prints what would go. |
 | `claude-crew switch <A> <B>` | Put conversation B in A's slot. Swaps if B is already live somewhere. |
 | `claude-crew prompt <target> <text>` | Type a real prompt into that slot's running claude. |
 | `claude-crew model <target> <model>` | Relaunch that conversation on a different model. |
@@ -80,8 +84,8 @@ seen on 2026-09-02 switching Click Clack to Discretionary Backtest Platform.
 
 Every stop path is fatal when aimed at the slot you are running in: your claude
 gets SIGTERM, the turn dies mid-sentence, and remote control wedges. So
-`switch`, `model`, `effort`, and `start --force` refuse when the target is your
-own slot. `claude-crew whoami` shows which slot that is.
+`switch`, `model`, `effort`, `start --force`, and `new --slot <n> --force` refuse
+when the target is your own slot. `claude-crew whoami` shows which slot that is.
 
 ```
 claude-crew model Claude2 sonnet
@@ -98,6 +102,25 @@ distinguishes them; the calling context does.
 
 `--self` overrides it. The failure it prevents is total, so the override exists
 for a human who has decided, not for a script.
+
+## Deleting a conversation
+
+`claude-crew delete` removes `<id>.jsonl` and the `<id>/` directory beside it,
+which holds tool-results, subagents, and `custom-title.json`. There is no backup.
+
+- A bare run prints the id, title, transcript path, byte size, and sidecar
+  directory, then deletes nothing. `--yes` is what deletes.
+- It refuses your own conversation, and `--self` does not override that.
+- An ambiguous title substring is refused with the list of matches.
+- A conversation live in a slot is stopped first. Files are removed only after
+  the process has exited.
+- A conversation live in a terminal outside the slots is refused. Stop that
+  claude yourself first.
+
+```
+claude-crew delete "old scratch"          # shows what would go
+claude-crew delete "old scratch" --yes    # deletes it
+```
 
 ## Typing into another session's input box
 
