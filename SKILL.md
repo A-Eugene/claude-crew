@@ -47,9 +47,12 @@ when a bare `claude-crew` fails: `/root/.claude/skills/claude-crew/bin/claude-cr
 | `claude-crew status` | Slot → conversation map, plus any conversation with no slot. |
 | `claude-crew whoami` | Which slot is running the caller, and whether it is protected. |
 | `claude-crew relabel` | Rename windows to match what each slot actually runs. |
-| `claude-crew start` | Fill free slots from the newest N conversations. |
+| `claude-crew start [--rerank]` | Relaunch the saved slots, each on its saved model and effort. With nothing saved, or with `--rerank`, fill free slots from the newest N conversations. |
 | `claude-crew start --dry-run` | Print the plan, launch nothing. |
-| `claude-crew restart [delay]` | Restart every slot via systemd, without killing the caller. |
+| `claude-crew restart [delay]` | Save the current slots, then restart every slot via systemd, without killing the caller. |
+| `claude-crew stop <target>` | Stop a slot and drop it from the saved slots, so start and restart leave it empty. The transcript is kept. |
+| `claude-crew save` | Record what every slot runs, with its model and effort, as the saved slots. |
+| `claude-crew boot on\|off\|status` | Install or remove a systemd unit that runs `claude-crew start` after a reboot. |
 | `claude-crew new "<title>" [--slot <n> [--force]]` | Start a brand new conversation in the first free slot, or in slot n. `--force` stops what slot n runs. |
 | `claude-crew delete <conversation> [--yes]` | Stop it if live, then delete its transcript and sidecar directory. Without `--yes` it only prints what would go. |
 | `claude-crew switch <A> <B>` | Put conversation B in A's slot. Swaps if B is already live somewhere. |
@@ -182,6 +185,25 @@ claude-crew effort 2 xhigh
 
 These change one running session only. To change the default for every future
 launch, use `claude-crew setup --model sonnet` and then `claude-crew restart`.
+
+## Saved slots
+
+`slots.state`, beside `crew.conf`, records what each slot runs: the conversation,
+its model, its effort, and its title. `start` and `restart` relaunch exactly that
+set. Each conversation returns to its own slot, and a slot you emptied stays empty.
+
+It records what is running, not what was asked for. Every command that changes a
+slot rewrites it, and `restart` rewrites it just before scheduling. A slot that
+has died keeps its entry, so a crashed session comes back on the next `start`.
+An entry leaves only through `stop`, `delete`, or its transcript disappearing.
+
+Ranking by recency happens only while nothing is saved, or with `start --rerank`.
+Recency is not what you want once slots are settled. A restart that ranked by it
+would drop a conversation you were using and pull in an older one with the same
+title.
+
+`claude-crew boot on` makes this survive a reboot. Without it, nothing starts the
+fleet after the machine comes back.
 
 ## Configuration
 

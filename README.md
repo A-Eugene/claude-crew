@@ -52,9 +52,12 @@ level cheap rather than destructive.
 | `claude-crew status` | Slot → conversation map, plus any conversation with no slot. |
 | `claude-crew whoami` | Which slot is running the caller, and whether it is protected. |
 | `claude-crew relabel` | Rename windows to match what each slot actually runs. |
-| `claude-crew start` | Fill free slots from the newest N conversations. |
+| `claude-crew start [--rerank]` | Relaunch the saved slots, each on its saved model and effort. With nothing saved, or with `--rerank`, fill free slots from the newest N conversations. |
 | `claude-crew start --dry-run` | Print the plan, launch nothing. |
-| `claude-crew restart [delay]` | Restart every slot via systemd, without killing the caller. |
+| `claude-crew restart [delay]` | Save the current slots, then restart every slot via systemd, without killing the caller. |
+| `claude-crew stop <target>` | Stop a slot and drop it from the saved slots, so start and restart leave it empty. The transcript is kept. |
+| `claude-crew save` | Record what every slot runs, with its model and effort, as the saved slots. |
+| `claude-crew boot on\|off\|status` | Install or remove a systemd unit that runs `claude-crew start` after a reboot. |
 | `claude-crew new "<title>" [--slot <n> [--force]]` | Start a brand new conversation in the first free slot, or in slot n. `--force` stops what slot n runs. |
 | `claude-crew delete <conversation> [--yes]` | Stop it if live, then delete its transcript and sidecar directory. Without `--yes` it only prints what would go. There is no backup. |
 | `claude-crew switch <A> <B>` | Put conversation B in A's slot. Swaps if B is already live. |
@@ -95,6 +98,25 @@ distinguishes them but the calling context. `--self` overrides.
 `delete` refuses your own conversation with no override, because a deleted
 transcript cannot be brought back.
 
+## Saved slots
+
+`slots.state`, beside `crew.conf`, records what each slot runs: the conversation,
+its model, its effort, and its title. `start` and `restart` relaunch exactly that
+set. Each conversation returns to its own slot, and a slot you emptied stays empty.
+
+It records what is running, not what was asked for. Every command that changes a
+slot rewrites it, and `restart` rewrites it just before scheduling. A slot that
+has died keeps its entry, so a crashed session comes back on the next `start`.
+An entry leaves only through `stop`, `delete`, or its transcript disappearing.
+
+Ranking by recency happens only while nothing is saved, or with `start --rerank`.
+Recency is not what you want once slots are settled. A restart that ranked by it
+would drop a conversation you were using and pull in an older one with the same
+title.
+
+`claude-crew boot on` makes this survive a reboot. Without it, nothing starts the
+fleet after the machine comes back.
+
 ## Install
 
 ```sh
@@ -106,8 +128,8 @@ claude-crew setup
 ```
 
 Config lands at `~/.claude/skills/claude-crew/crew.conf`. It is gitignored.
-**A reinstall must not overwrite it** — use `rsync --exclude=crew.conf` if you
-script the copy.
+**A reinstall must not overwrite it or `slots.state`** — use
+`rsync --exclude=crew.conf --exclude=slots.state` if you script the copy.
 
 As a Claude Code skill, `SKILL.md` also lets any session drive the fleet by
 asking in plain language.
@@ -130,6 +152,16 @@ Every command except `setup` refuses to run until the config exists, so setup is
 its own gate.
 
 ## Things this learned the hard way
+
+**Recency is not intent.** Filling slots from the most recently used
+conversations works until slots are settled. Then a restart drops one you are
+using and pulls in an older duplicate with the same title. Slots are now saved,
+and recency only fills slots while nothing is saved.
+
+**A registry file can outlive its process.** After a reboot a new claude can
+receive the pid of an old one whose `~/.claude/sessions/<pid>.json` is still on
+disk. A file older than the process it names is ignored, or a save would record
+the wrong conversation for that slot.
 
 Each of these is a real failure that happened on a real host. The comments in
 `bin/claude-crew` mark them at the code that prevents them.
