@@ -144,6 +144,7 @@ asking in plain language.
 | `EFFORT` | `high` | `low` `medium` `high` `xhigh` `max` |
 | `PERMISSION_MODE` | `auto` | |
 | `REMOTE_CONTROL` | `on` | Named after the conversation title. |
+| `AUTOCOMPACT` | `auto` | Passed as `--autocompact`: `auto`, or a window from 100k to 1M tokens. |
 | `TMUX_PREFIX` | `Claude` | Session names become `Claude1`..`ClaudeN`. |
 | `SHELL_CMD` | `bash` | The pane process. |
 | `CLAUDE_BIN` | `claude` | A testing seam. Point it at a stub to exercise the tmux mechanics without resuming a real conversation. |

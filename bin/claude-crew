@@ -78,6 +78,7 @@ MODEL=opus
 EFFORT=high
 PERMISSION_MODE=auto
 REMOTE_CONTROL=on
+AUTOCOMPACT=auto
 TMUX_PREFIX=Claude
 SHELL_CMD=bash
 # Seam for testing: point this at a stub to exercise the tmux mechanics without
@@ -85,7 +86,7 @@ SHELL_CMD=bash
 # writes and corrupt it).
 CLAUDE_BIN=claude
 
-CONF_KEYS=(WORKDIR SLOTS MODEL EFFORT PERMISSION_MODE REMOTE_CONTROL TMUX_PREFIX SHELL_CMD CLAUDE_BIN)
+CONF_KEYS=(WORKDIR SLOTS MODEL EFFORT PERMISSION_MODE REMOTE_CONTROL AUTOCOMPACT TMUX_PREFIX SHELL_CMD CLAUDE_BIN)
 
 # Set by the global --self flag. Lets a caller deliberately stop its own slot,
 # which is otherwise refused. Off by default because the failure is total: the
@@ -521,7 +522,8 @@ ensure_pane() {
 
 claude_cmd() {          # $1=conv id (may be empty)  $2=title (may be empty)  $3=model  $4=effort
   local id="$1" title="$2" model="${3:-$MODEL}" effort="${4:-$EFFORT}"
-  local -a a=("$CLAUDE_BIN" --permission-mode "$PERMISSION_MODE" --model "$model" --effort "$effort")
+  local -a a=("$CLAUDE_BIN" --permission-mode "$PERMISSION_MODE" --model "$model" --effort "$effort"
+              --autocompact "$AUTOCOMPACT")
   [ -n "$title" ] && a+=(-n "$title")
   if [ "$REMOTE_CONTROL" = on ]; then
     if [ -n "$title" ]; then a+=(--remote-control "$title"); else a+=(--remote-control); fi
@@ -624,6 +626,7 @@ cmd_setup() {
       --effort)          EFFORT="$2"; shift 2 ;;
       --permission-mode) PERMISSION_MODE="$2"; shift 2 ;;
       --remote-control)  REMOTE_CONTROL="$2"; shift 2 ;;
+      --autocompact)     AUTOCOMPACT="$2"; shift 2 ;;
       --tmux-prefix)     TMUX_PREFIX="$2"; shift 2 ;;
       --shell)           SHELL_CMD="$2"; shift 2 ;;
       --claude-bin)      CLAUDE_BIN="$2"; shift 2 ;;
@@ -640,6 +643,8 @@ cmd_setup() {
   case "$PERMISSION_MODE" in acceptEdits|auto|bypassPermissions|manual|dontAsk|plan) ;;
     *) die "setup: --permission-mode is not a value claude accepts" ;; esac
   case "$REMOTE_CONTROL" in on|off) ;; *) die "setup: --remote-control must be on or off" ;; esac
+  # claude rejects a bad value at launch, which would leave every pane at a bare shell.
+  [[ "$AUTOCOMPACT" =~ ^(auto|[0-9]+[kKmM]?)$ ]] || die "setup: --autocompact must be auto or a size from 100k to 1M"
 
   {
     echo "# crew.conf — written by \`claude-crew setup\`. Safe to edit by hand."
@@ -659,7 +664,7 @@ cmd_status() {
   scan_slots
   local -a rows; mapfile -t rows < <(list_convs "$SLOTS")
   local n c t pid real row rid rtitle
-  echo "slots (prefix $TMUX_PREFIX, workdir $WORKDIR, $MODEL/$EFFORT/$PERMISSION_MODE, remote-control $REMOTE_CONTROL):"
+  echo "slots (prefix $TMUX_PREFIX, workdir $WORKDIR, $MODEL/$EFFORT/$PERMISSION_MODE, remote-control $REMOTE_CONTROL, autocompact $AUTOCOMPACT):"
   for ((n = 1; n <= SLOTS; n++)); do
     if ! tmux has-session -t "$(sess_name "$n")" 2>/dev/null; then
       printf '  %-10s <no pane>\n' "$(sess_name "$n")"; continue
