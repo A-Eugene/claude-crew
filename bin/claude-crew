@@ -41,8 +41,13 @@
 #   whoami                     which slot is running the caller (guard input)
 #   relabel                    rename windows to match what each slot really runs
 #
-# Global flag: --self  allow a command to stop the caller's own slot. `delete`
-#                      ignores it: the caller's own conversation is never deleted.
+# Global flags:
+#   --self       act on the caller's own slot. The command is not run inline:
+#                it is scheduled on a timer and fires once the turn has ended,
+#                because stopping your own claude kills the shell that would
+#                have restarted it. `delete` ignores --self: the caller's own
+#                conversation is never deleted.
+#   --in <secs>  how long --self waits before firing (default 15).
 #
 # <target> is a slot number, a tmux session name, or a case-insensitive
 # substring of a conversation title ("click" finds "[VPS] Click Clack").
@@ -88,10 +93,13 @@ CLAUDE_BIN=claude
 
 CONF_KEYS=(WORKDIR SLOTS MODEL EFFORT PERMISSION_MODE REMOTE_CONTROL AUTOCOMPACT TMUX_PREFIX SHELL_CMD CLAUDE_BIN)
 
-# Set by the global --self flag. Lets a caller deliberately stop its own slot,
-# which is otherwise refused. Off by default because the failure is total: the
-# turn that asked for it dies before it can report what happened.
+# Set by the global --self flag. Lets a caller act on its own slot, which is
+# otherwise refused. It does not run inline: see defer_self.
 ALLOW_SELF=0
+# How long --self waits before the deferred command fires. Set with --in <secs>.
+DEFER_DELAY=15
+# Every argument this run was given, for re-running it on a timer.
+ORIG_ARGS=()
 
 die() { printf 'crew: %s\n' "$*" >&2; exit 1; }
 
@@ -369,17 +377,37 @@ detect_self() {                       # call AFTER scan_slots
   SELF_SLOT="${SLOT_OF_CONV[$SELF_CONV]:-}"
 }
 
+# Run this same command again on a timer, detached, and stop now.
+#
+# Stopping your own slot inline only ever completes the first half. The caller's
+# claude gets SIGTERM, the tool shell that invoked crew dies with it, and the
+# relaunch never runs — so `switch` on your own slot emptied the slot and left it
+# that way, observed on 2026-09-15. --self used to warn and carry on into exactly
+# that. It now hands the work to systemd instead, the same way `restart` does:
+# the caller is already gone when the command fires, and under systemd there is
+# no claude ancestor, so the guard does not fire a second time.
+defer_self() {                        # $1=what was asked
+  local unit="crew-self-$(date +%s)"
+  command -v "${CREW_SYSTEMD_RUN:-systemd-run}" >/dev/null ||
+    die "$1 targets your own slot, and systemd-run is missing so it cannot be deferred. Nothing was done."
+  "${CREW_SYSTEMD_RUN:-systemd-run}" --on-active="$DEFER_DELAY" --unit="$unit" --collect \
+    --setenv=HOME="$HOME" --property=KillMode=process \
+    "$CREW_DIR/bin/claude-crew" ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"}
+  echo "$1 targets $(sess_name "$SELF_SLOT"), the session you are running in."
+  echo "scheduled $unit in ${DEFER_DELAY}s, so it runs once this turn has ended"
+  echo "this session stops when it fires, and comes back on the same conversation"
+  echo "verify after it fires:  claude-crew status  &&  journalctl -u $unit"
+  exit 0
+}
+
 # Refuse to stop the slot we are running inside. $1=slot, $2=what was asked.
 refuse_self() {
   [ -n "$SELF_SLOT" ] || return 0
   [ "$1" = "$SELF_SLOT" ] || return 0
-  [ "$ALLOW_SELF" = 1 ] && {
-    echo "warning: --self given; stopping the session you are running in" >&2
-    return 0
-  }
+  [ "$ALLOW_SELF" = 1 ] && defer_self "$2"    # never returns
   die "$2 would stop the session you are running in ($(sess_name "$1"), ${SELF_CONV:0:8}).
-     Use 'claude-crew restart', which detaches so the caller is already gone.
-     Pass --self to override."
+     Pass --self to run it on a timer instead, after this turn ends.
+     'claude-crew restart' does the same for every slot at once."
 }
 
 free_slot() {           # lowest slot with no live claude at all
@@ -1390,10 +1418,19 @@ cmd_update() {
 }
 
 # --- dispatch ----------------------------------------------------------------
-# --self may appear anywhere; strip it before the subcommand sees the args.
+# Global flags may appear anywhere; strip them before the subcommand sees the
+# args. ORIG_ARGS keeps the line as given, because --self re-runs it on a timer.
+ORIG_ARGS=("$@")
 ARGS=()
-for a in "$@"; do
-  case "$a" in --self) ALLOW_SELF=1 ;; *) ARGS+=("$a") ;; esac
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --self) ALLOW_SELF=1; shift ;;
+    --in)
+      [ $# -ge 2 ] || die "--in needs a number of seconds"
+      [[ "$2" =~ ^[0-9]+$ ]] || die "--in takes seconds as a number, not '$2'"
+      DEFER_DELAY="$2"; shift 2 ;;
+    *) ARGS+=("$1"); shift ;;
+  esac
 done
 set -- ${ARGS[@]+"${ARGS[@]}"}
 

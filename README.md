@@ -93,7 +93,16 @@ target is your own session, and `whoami` tells you which one that is.
 The guard reads the process tree rather than tmux. Under systemd, cron, or a
 plain ssh shell there is no claude ancestor and it stays silent, which is how
 `restart` performs the same work an inline `start --force` is refused. Nothing
-distinguishes them but the calling context. `--self` overrides.
+distinguishes them but the calling context.
+
+`--self` does not lift the guard. It runs the same command on a timer instead:
+crew hands it to systemd and returns, so it fires once your turn has ended and
+your own claude is no longer mid-turn. `--in <secs>` sets the wait, 15 by
+default. The deferred run has no claude ancestor, so it does the work inline.
+
+That is what the timer is for. Stopping your own claude kills the tool shell
+that would have restarted it, so a self-targeted `switch` used to stop the slot
+and end there, leaving it empty.
 
 `delete` refuses your own conversation with no override, because a deleted
 transcript cannot be brought back.

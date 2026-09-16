@@ -86,15 +86,20 @@ seen on 2026-09-02 switching Click Clack to Discretionary Backtest Platform.
 ## It will not let you kill yourself
 
 Every stop path is fatal when aimed at the slot you are running in: your claude
-gets SIGTERM, the turn dies mid-sentence, and remote control wedges. So
-`switch`, `model`, `effort`, `start --force`, and `new --slot <n> --force` refuse
-when the target is your own slot. `claude-crew whoami` shows which slot that is.
+gets SIGTERM, the turn dies mid-sentence, and remote control wedges. Worse, only
+the first half of the command runs. Crew is a child of your own claude, so the
+tool shell dies with it and the relaunch two lines later never happens — a
+self-targeted `switch` stopped the slot and left it empty, on 2026-09-15.
+
+So `switch`, `model`, `effort`, `stop`, `start --force`, and
+`new --slot <n> --force` refuse when the target is your own slot.
+`claude-crew whoami` shows which slot that is.
 
 ```
 claude-crew model Claude2 sonnet
 crew: changing model or effort would stop the session you are running in (Claude2, 2b599c1a).
-     Use 'claude-crew restart', which detaches so the caller is already gone.
-     Pass --self to override.
+     Pass --self to run it on a timer instead, after this turn ends.
+     'claude-crew restart' does the same for every slot at once.
 ```
 
 The guard reads the process tree, not tmux, because `$TMUX` is not reliably
@@ -103,8 +108,23 @@ claude ancestor, so it stays silent — which is exactly how `claude-crew restar
 keeps doing the same work that an inline `start --force` is refused. No flag
 distinguishes them; the calling context does.
 
-`--self` overrides it. The failure it prevents is total, so the override exists
-for a human who has decided, not for a script.
+`--self` does not run the command inline. It schedules the same argument line
+through systemd and returns, so it fires once the turn has ended:
+
+```
+claude-crew switch 1 "Trading Research 1" --self
+switch targets Claude1, the session you are running in.
+scheduled crew-self-1789533704 in 15s, so it runs once this turn has ended
+this session stops when it fires, and comes back on the same conversation
+verify after it fires:  claude-crew status  &&  journalctl -u crew-self-1789533704
+```
+
+`--in <secs>` sets the wait, 15 by default. Give it longer when the turn still
+has work to do. The deferred run has no claude ancestor, so it does the work
+inline rather than deferring again.
+
+Report it as scheduled, not as done. The result is only visible in the next
+session, through `claude-crew status` and the unit's journal.
 
 ## Deleting a conversation
 
