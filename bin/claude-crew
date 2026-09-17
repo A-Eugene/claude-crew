@@ -31,6 +31,10 @@
 #   boot on|off|status         start the saved slots automatically after a reboot
 #   new "<title>" [--slot <n> [--force]]
 #                              start a brand new conversation in a free slot
+#   clear <target> ["<title>"] replace a slot's conversation with a brand new
+#                              one, under a name nothing else holds. The old
+#                              conversation is kept. This is the alternative to
+#                              an in-band /clear, which reuses the name.
 #   delete <conversation> [--yes]
 #                              stop it if live, then delete its transcript for good
 #   switch <A> <B>             put conversation B in A's slot; swap if B is live
@@ -235,13 +239,18 @@ def last_user_ts(path):
 # ever sits outside the newest 4*limit by mtime.
 cands = []
 for path in files[: max(4 * limit, 20)]:
-    if not resumable(path):
+    title = normalise(last_title(path))
+    # A session that was started and named but never typed into has no user turn
+    # at all, and resumable() rejects it. It is still a conversation that was
+    # asked for, so keep it when it carries a title. Without this, `new` creates
+    # sessions that `switch`, `delete` and `clear` cannot address by name.
+    if not resumable(path) and not title:
         continue
-    cands.append((last_user_ts(path) or "", os.path.getmtime(path), path))
+    cands.append((last_user_ts(path) or "", os.path.getmtime(path), path, title))
 
 cands.sort(key=lambda c: (c[0], c[1]), reverse=True)
-for _ts, _mt, path in cands[:limit]:
-    sys.stdout.write("%s\t%s\n" % (os.path.basename(path)[:-6], normalise(last_title(path))))
+for _ts, _mt, path, title in cands[:limit]:
+    sys.stdout.write("%s\t%s\n" % (os.path.basename(path)[:-6], title))
 PY
 }
 
@@ -594,8 +603,30 @@ stop_claude_in() {
 }
 
 # --- target resolution -------------------------------------------------------
-# A slot number, a tmux session name, or a case-insensitive substring of a live
-# slot's title. Refuses an ambiguous substring rather than guessing.
+# Titles carry a host tag and punctuation nobody wants to retype, so matching
+# ignores both: lowercase, drop a leading "[tag] ", and reduce every run of
+# non-alphanumerics to one space. "pensi", "Pensi" and "[VPS] Pensi" then all
+# name the same conversation.
+norm_name() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' |
+    sed -E 's/^\[[^]]*\][[:space:]]*//; s/[^a-z0-9]+/ /g; s/^ +//; s/ +$//'
+}
+
+# True when query $1 loosely names $2: a normalised substring, or every word of
+# the query present in the name in any order.
+name_matches() {
+  local q n w
+  q=$(norm_name "$1"); n=$(norm_name "$2")
+  [ -n "$q" ] || return 1
+  case "$n" in *"$q"*) return 0 ;; esac
+  for w in $q; do
+    case " $n " in *" $w "*) ;; *) return 1 ;; esac
+  done
+  return 0
+}
+
+# A slot number, a tmux session name, or a loose match on a live slot's title.
+# Refuses an ambiguous name rather than guessing.
 resolve_slot() {
   local arg="$1" n hits=() t
   if [[ "$arg" =~ ^[0-9]+$ ]] && [ "$arg" -ge 1 ] && [ "$arg" -le "$SLOTS" ]; then
@@ -607,9 +638,7 @@ resolve_slot() {
   for ((n = 1; n <= SLOTS; n++)); do
     t=$(title_of_slot "$n")
     [ -n "$t" ] || continue
-    shopt -s nocasematch
-    [[ "$t" == *"$arg"* ]] && hits+=("$n")
-    shopt -u nocasematch
+    name_matches "$arg" "$t" && hits+=("$n")
   done
   case "${#hits[@]}" in
     1) echo "${hits[0]}" ;;
@@ -629,9 +658,7 @@ resolve_conv() {        # echoes "<id>\t<title>"
     printf '%s\t\n' "$arg"; return 0
   fi
   while IFS=$'\t' read -r id title; do
-    shopt -s nocasematch
-    [[ "$title" == *"$arg"* ]] && hits+=("$id"$'\t'"$title")
-    shopt -u nocasematch
+    name_matches "$arg" "$title" && hits+=("$id"$'\t'"$title")
   done < <(list_convs 60)
   case "${#hits[@]}" in
     1) printf '%s\n' "${hits[0]}" ;;
@@ -1034,6 +1061,64 @@ cmd_new() {
   fi
 }
 
+# The first name in a family that no conversation holds: "Base", then "Base 2",
+# "Base 3", and so on. A base that already ends in a number is stripped back
+# first, so clearing twice gives "Base 3" rather than "Base 2 2".
+next_free_title() {     # $1 = base title
+  local base="$1" cand n=2 clash x
+  [[ "$base" =~ ^(.*)\ ([0-9]+)$ ]] && base="${BASH_REMATCH[1]}"
+  local -a taken=()
+  local tid ttl
+  while IFS=$'\t' read -r tid ttl; do taken+=("$ttl"); done < <(list_convs 60)
+  cand="$base"
+  while :; do
+    clash=0
+    for x in ${taken[@]+"${taken[@]}"}; do [ "$x" = "$cand" ] && { clash=1; break; }; done
+    [ "$clash" = 0 ] && { printf '%s\n' "$cand"; return 0; }
+    cand="$base $n"; n=$((n + 1))
+  done
+}
+
+# Replace a slot's conversation with a brand new one, under a name nothing else
+# holds. This is the alternative to an in-band /clear.
+#
+# /clear mints a new conversation inside the SAME process, and that process
+# carries the `-n` name it was launched with, so the new conversation is born
+# with a name another conversation already has. Five of the duplicates in this
+# store came from exactly that. Relaunching instead means the new conversation
+# is named once, deliberately, and the window and saved slot agree with it.
+#
+# The old conversation is kept. Clearing is not deleting, and `claude-crew
+# delete` is the command that throws context away.
+cmd_clear() {
+  local usage='clear: usage: claude-crew clear <target> ["<new title>"]'
+  local target="" title=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -*) die "clear: unknown flag $1" ;;
+      *)
+        if [ -z "$target" ]; then target="$1"
+        elif [ -z "$title" ]; then title="$1"
+        else die "$usage"; fi
+        shift ;;
+    esac
+  done
+  [ -n "$target" ] || die "$usage"
+
+  scan_slots
+  detect_self
+  local n; n=$(resolve_slot "$target")
+  # Aimed at your own slot this defers onto a timer, because stopping your own
+  # claude kills the shell that would have started the replacement.
+  refuse_self "$n" "clear"
+
+  local old; old=$(title_of_slot "$n")
+  [ -n "$title" ] || title=$(next_free_title "${old:-$(sess_name "$n")}")
+  printf '%s: %s -> new conversation "%s"\n' "$(sess_name "$n")" "${old:-empty}" "$title"
+  echo "  the old conversation is kept, and stays resumable"
+  cmd_new "$title" --slot "$n" --force
+}
+
 # Every live claude pid whose session registry names conversation $1, inside the
 # fleet or not. The registry is keyed by pid, so this also finds a claude running
 # in a plain terminal that no slot knows about.
@@ -1075,10 +1160,14 @@ cmd_delete() {
   [[ "$id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] ||
     die "delete: '$id' is not a conversation id. Nothing was deleted."
 
-  local pd file side
+  # Uploads live OUTSIDE the transcript store, keyed by conversation id, so
+  # deleting the transcript alone strands them. One 14 MB apk sat there with
+  # nothing left pointing at it.
+  local pd file side ups
   pd=$(projdir)
   file="$pd/$id.jsonl"
   side="$pd/$id"
+  ups="$HOME/.claude/uploads/$id"
   [ -f "$file" ] || die "delete: no transcript at $file"
 
   # No --self escape here. A stopped session can be started again. A deleted
@@ -1095,6 +1184,11 @@ cmd_delete() {
     printf 'sidecar dir   %s/  (%s bytes)\n' "$side" "$(du -sb "$side" | cut -f1)"
   else
     printf 'sidecar dir   none\n'
+  fi
+  if [ -d "$ups" ]; then
+    printf 'uploads dir   %s/  (%s bytes)\n' "$ups" "$(du -sb "$ups" | cut -f1)"
+  else
+    printf 'uploads dir   none\n'
   fi
 
   # A claude outside the fleet is not ours to stop. Deleting under it would
@@ -1145,8 +1239,9 @@ cmd_delete() {
 
   rm -f -- "$file"
   if [ -d "$side" ]; then rm -rf -- "$side"; fi
-  if [ -e "$file" ] || [ -e "$side" ]; then
-    die "delete: something is left behind under $pd for $id"
+  if [ -d "$ups" ]; then rm -rf -- "$ups"; fi
+  if [ -e "$file" ] || [ -e "$side" ] || [ -e "$ups" ]; then
+    die "delete: something is left behind for $id"
   fi
   echo "deleted $id (${title:-untitled})"
   save_state
@@ -1446,6 +1541,7 @@ case "$cmd" in
   save)    load_conf; cmd_save "$@" ;;
   boot)    load_conf; cmd_boot "$@" ;;
   new)     load_conf; cmd_new "$@" ;;
+  clear)   load_conf; cmd_clear "$@" ;;
   delete)  load_conf; cmd_delete "$@" ;;
   switch)  load_conf; cmd_switch "$@" ;;
   prompt)  load_conf; cmd_prompt "$@" ;;

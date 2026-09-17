@@ -54,16 +54,20 @@ when a bare `claude-crew` fails: `/root/.claude/skills/claude-crew/bin/claude-cr
 | `claude-crew save` | Record what every slot runs, with its model and effort, as the saved slots. |
 | `claude-crew boot on\|off\|status` | Install or remove a systemd unit that runs `claude-crew start` after a reboot. |
 | `claude-crew new "<title>" [--slot <n> [--force]]` | Start a brand new conversation in the first free slot, or in slot n. `--force` stops what slot n runs. |
-| `claude-crew delete <conversation> [--yes]` | Stop it if live, then delete its transcript and sidecar directory. Without `--yes` it only prints what would go. |
+| `claude-crew clear <target> ["<title>"]` | Replace a slot's conversation with a brand new one, under a name nothing else holds. The old conversation is kept. |
+| `claude-crew delete <conversation> [--yes]` | Stop it if live, then delete its transcript, its sidecar directory and its uploads. Without `--yes` it only prints what would go. |
 | `claude-crew switch <A> <B>` | Put conversation B in A's slot. Swaps if B is already live somewhere. |
 | `claude-crew prompt <target> <text>` | Type a real prompt into that slot's running claude. |
 | `claude-crew model <target> <model>` | Relaunch that conversation on a different model. |
 | `claude-crew effort <target> <level>` | Relaunch it at a different effort level. |
 | `claude-crew update` | Upgrade the claude binary, then restart. |
 
-`<target>` is a slot number, a tmux session name, or a case-insensitive
-substring of a title. `claude-crew switch 4 "click"` works. An ambiguous substring is
-refused with the list of matches, never guessed.
+`<target>` is a slot number, a tmux session name, or a loose match on a title.
+Matching lowercases, ignores a leading `[tag]`, and treats punctuation as
+whitespace, so `pensi`, `Pensi` and `[VPS] Pensi` all reach the same
+conversation, and the words may arrive in any order. `claude-crew switch 4 "click"`
+works. A name matching more than one conversation is refused with the list of
+matches, never guessed.
 
 ## Three things this host has already gotten wrong
 
@@ -126,13 +130,36 @@ inline rather than deferring again.
 Report it as scheduled, not as done. The result is only visible in the next
 session, through `claude-crew status` and the unit's journal.
 
+## Starting over in a slot
+
+Prefer `claude-crew clear <target>` over an in-band `/clear`.
+
+`/clear` mints a new conversation inside the same process, and that process
+still carries the `-n` name it was launched with, so the new conversation is
+born holding a name another conversation already has. Five duplicates in this
+host's store came from exactly that.
+
+`clear` stops the slot, starts a new conversation there, and names it something
+nothing else holds: `Notes`, then `Notes 2`, then `Notes 3`. Pass a title to
+choose one yourself. The old conversation is kept and stays resumable.
+
+```
+claude-crew clear 4                      # Notes -> "Notes 2"
+claude-crew clear "notes" "Billing spike" # choose the name
+```
+
+Aimed at your own slot it defers onto a timer, like every other stop path.
+
 ## Deleting a conversation
 
-`claude-crew delete` removes `<id>.jsonl` and the `<id>/` directory beside it,
-which holds tool-results, subagents, and `custom-title.json`. There is no backup.
+`claude-crew delete` removes three things: `<id>.jsonl`, the `<id>/` directory
+beside it holding tool-results, subagents and `custom-title.json`, and
+`~/.claude/uploads/<id>/` holding every file attached to that conversation.
+Uploads sit outside the transcript store, so deleting without them strands
+whatever was attached. There is no backup.
 
-- A bare run prints the id, title, transcript path, byte size, and sidecar
-  directory, then deletes nothing. `--yes` is what deletes.
+- A bare run prints the id, title, transcript path, byte size, sidecar
+  directory and uploads directory, then deletes nothing. `--yes` is what deletes.
 - It refuses your own conversation, and `--self` does not override that.
 - An ambiguous title substring is refused with the list of matches.
 - A conversation live in a slot is stopped first. Files are removed only after

@@ -59,16 +59,19 @@ level cheap rather than destructive.
 | `claude-crew save` | Record what every slot runs, with its model and effort, as the saved slots. |
 | `claude-crew boot on\|off\|status` | Install or remove a systemd unit that runs `claude-crew start` after a reboot. |
 | `claude-crew new "<title>" [--slot <n> [--force]]` | Start a brand new conversation in the first free slot, or in slot n. `--force` stops what slot n runs. |
-| `claude-crew delete <conversation> [--yes]` | Stop it if live, then delete its transcript and sidecar directory. Without `--yes` it only prints what would go. There is no backup. |
+| `claude-crew clear <target> ["<title>"]` | Replace a slot's conversation with a brand new one, under a name nothing else holds. The old conversation is kept. |
+| `claude-crew delete <conversation> [--yes]` | Stop it if live, then delete its transcript, its sidecar directory and its uploads. Without `--yes` it only prints what would go. There is no backup. |
 | `claude-crew switch <A> <B>` | Put conversation B in A's slot. Swaps if B is already live. |
 | `claude-crew prompt <target> <text>` | Type keystrokes into that slot's input box. Not a messaging channel — see below. |
 | `claude-crew model <target> <model>` | Relaunch that conversation on a different model. |
 | `claude-crew effort <target> <level>` | Relaunch it at a different effort level. |
 | `claude-crew update` | Upgrade the claude binary, then restart. |
 
-`<target>` is a slot number, a tmux session name, or a case-insensitive
-substring of a title. An ambiguous substring is refused with the list of
-matches, never guessed.
+`<target>` is a slot number, a tmux session name, or a loose match on a title.
+Matching lowercases, ignores a leading `[tag]`, and treats punctuation as
+whitespace, so `pensi`, `Pensi` and `[VPS] Pensi` all name the same thing. Your
+words may also arrive in any order. A name that matches more than one
+conversation is refused with the list of matches, never guessed.
 
 ## `prompt` is a keyboard, not a message bus
 
@@ -106,6 +109,24 @@ and end there, leaving it empty.
 
 `delete` refuses your own conversation with no override, because a deleted
 transcript cannot be brought back.
+
+## Starting over in a slot
+
+`/clear` mints a new conversation inside the same process, and that process
+still carries the `-n` name it was launched with. The new conversation is
+therefore born holding a name another conversation already has. Do it twice and
+the resume picker lists three conversations under one name with nothing to tell
+them apart.
+
+`claude-crew clear <target>` does the same job without that. It stops the slot,
+starts a new conversation there, and gives it a name nothing else holds:
+`Notes`, then `Notes 2`, then `Notes 3`. Pass a title to choose one yourself.
+The old conversation is kept and stays resumable, because clearing is not
+deleting.
+
+Aimed at the slot you are running in, it defers onto a timer like every other
+stop path, since stopping your own claude kills the shell that would have
+started the replacement.
 
 ## Saved slots
 
