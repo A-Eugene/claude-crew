@@ -203,7 +203,7 @@ caller asked for one — carrying no authorship is the point, and the caller can
 put attribution in the text when they want it there.
 
 ```
-claude-crew prompt "Trading Research 1" "re-read the vault index before answering"
+claude-crew prompt "Trading Research 1" "re-read the graph index before answering"
 claude-crew prompt 2 "status on the ingest queue?"
 ```
 
