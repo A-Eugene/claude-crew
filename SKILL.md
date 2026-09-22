@@ -16,7 +16,7 @@ description: >-
   claude session, delete a conversation, which conversation is in which slot,
   switch TR1 to Click Clack, change slot 2 to sonnet, bump effort to xhigh,
   update claude code, type this into Claude3, prompt this to Trading Research 1,
-  send this to another session, unstick a stuck session.
+  send this to another session, unstick a stuck session. Load it also before ANY tmux command that kills, stops or restarts something, even when the fleet was never mentioned: `tmux kill-server` ends every session on this host including your own.
 
   Choosing between the two ways to reach a peer: SendMessage carries the
   sender's context and identity, `claude-crew prompt` carries neither, by
@@ -300,6 +300,22 @@ writes, so stop one as soon as it shows up.
 
 `claude-crew relabel` repairs the stale window names. Without it a drifted label
 persists until that slot is relaunched.
+
+## Never run `tmux kill-server`
+
+It ends every session on this host, including your own. A tool shell inherits
+`$TMUX`, and tmux follows `$TMUX` over `TMUX_TMPDIR`, so a server you believe is
+separate is the real one.
+
+To exercise tmux without touching the fleet, name a socket explicitly and clear
+`$TMUX` first:
+
+```bash
+env -u TMUX tmux -L test new-session -d -s probe
+env -u TMUX tmux -L test kill-session -t probe
+```
+
+Remove test sessions one at a time by name. Never by killing a server.
 
 ## The `pgrep -f` trap
 
