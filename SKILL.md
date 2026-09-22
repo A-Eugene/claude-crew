@@ -9,13 +9,23 @@ description: >-
   conversation is in which tmux slot, change a running session's model or effort
   level, upgrade the claude binary, unstick a session waiting at a pending
   message, or put text into another session's input box exactly as typed.
+  Make sure to load this skill whenever the user mentions the claudes, the
+  fleet, a slot, or names another session at all — even when they do not say
+  "claude-crew" and even when the request looks like ordinary shell work.
   Triggers: crew, claude-crew, restart the claudes, start the claudes, new
-  claude session, delete a conversation, which
-  conversation is in which slot, switch TR1 to Click Clack, change slot 2 to
-  sonnet, bump effort to xhigh, update claude code, type this into Claude3,
-  unstick a stuck session. To reach a peer when you need it to acknowledge or
-  reply, use SendMessage instead: that carries the sender's context and identity.
-  `claude-crew prompt` carries neither, by design.
+  claude session, delete a conversation, which conversation is in which slot,
+  switch TR1 to Click Clack, change slot 2 to sonnet, bump effort to xhigh,
+  update claude code, type this into Claude3, prompt this to Trading Research 1,
+  send this to another session, unstick a stuck session.
+
+  Choosing between the two ways to reach a peer: SendMessage carries the
+  sender's context and identity, `claude-crew prompt` carries neither, by
+  design. **When the user names the mechanism — "prompt this to X" — use that
+  mechanism, even if a reply is wanted.** Only when they have not named one,
+  choose by whether the peer must acknowledge or reply.
+
+  Invoke it at `~/.claude/skills/claude-crew/bin/claude-crew` when the command
+  is not on PATH: a tool-call shell does not inherit the login shell's PATH.
 ---
 
 # claude-crew
