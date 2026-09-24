@@ -15,7 +15,7 @@ claude-crew status
 ```
 
 ```
-slots (prefix Claude, workdir /root, opus/high/auto, remote-control on):
+slots (prefix Claude, workdir /root, claude-opus-5-5/medium/auto, remote-control on):
   Claude1    2b599c1a  VPS Management
   Claude2    9d1dcf25  Web Ko Gedy
   Claude3    e3d089f9  Trading Research 1

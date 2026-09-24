@@ -83,8 +83,8 @@ PATH="$HOME/.local/bin:$PATH"; export PATH
 # --- config -----------------------------------------------------------------
 WORKDIR=/root
 SLOTS=5
-MODEL=opus
-EFFORT=high
+MODEL=claude-opus-5-5
+EFFORT=medium
 PERMISSION_MODE=auto
 REMOTE_CONTROL=on
 AUTOCOMPACT=auto
