@@ -24,13 +24,13 @@ from pathlib import Path
 HOST, PORT = "127.0.0.1", int(os.environ.get("CREW_WEB_PORT", "3115"))
 ROOT = Path(__file__).resolve().parent
 CREW = os.environ.get("CREW_BIN", str(ROOT.parent / "bin" / "claude-crew"))
-CONFIG = Path(os.environ.get("CREW_WEB_CONFIG", "/root/.config/claude-crew-web"))
+CONFIG = Path(os.environ.get("CREW_WEB_CONFIG", Path.home() / ".config" / "claude-crew-web"))
 PASSWORD_FILE = CONFIG / "password"
 TOKENS_FILE = CONFIG / "tokens.json"
 REFRESH_S = 15
 TOKEN_DAYS = 30
-ENV = {**os.environ, "HOME": os.environ.get("HOME", "/root"),
-       "PATH": "/root/.local/bin:/root/.nvm/versions/node/v22.23.1/bin:/usr/local/bin:/usr/bin:/bin"}
+ENV = {**os.environ, "HOME": str(Path.home()),
+       "PATH": f"{Path.home()}/.local/bin:{os.environ.get('PATH', '')}:/usr/local/bin:/usr/bin:/bin"}
 
 MODELS = ("claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5", "claude-sonnet-5",
           "claude-fable-5-1", "claude-haiku-4-5", "opus", "sonnet", "fable", "haiku")
@@ -39,6 +39,7 @@ PERMISSION_MODES = ("acceptEdits", "auto", "bypassPermissions", "manual", "dontA
 TITLE_RE = re.compile(r"^[^\x00-\x1f\x7f]{1,80}$")
 PROMPT_RE = re.compile(r"^[^\x00-\x09\x0b-\x1f\x7f]{1,4000}$")
 AUTOCOMPACT_RE = re.compile(r"^(auto|[0-9]+[kKmM]?)$")
+WORKDIR_RE = re.compile(r"^/[^\x00-\x1f\x7f]{0,200}$")
 
 _state = {"data": None, "updated": 0.0, "error": None}
 _lock = threading.Lock()
@@ -190,6 +191,11 @@ def defaults_args(a):
         if not AUTOCOMPACT_RE.match(str(a["autocompact"])):
             return None, "Auto-compact is auto or a size such as 400k."
         args += ["--autocompact", str(a["autocompact"])]
+    if a.get("workdir") is not None:
+        w = str(a["workdir"]).strip()
+        if not WORKDIR_RE.match(w):
+            return None, "The working directory is an absolute path, such as /home/you."
+        args += ["--workdir", w]
     if not args:
         return None, "Nothing to change."
     return args, None
@@ -198,48 +204,53 @@ def defaults_args(a):
 def run_action(a):
     """Returns (exit code, output, message). The message is what the page shows on success."""
     op, slot, conv = a.get("op"), a.get("slot"), a.get("conv")
+    # A working session is refused unless the page sent an explicit interrupt.
+    pre = ["--interrupt"] if a.get("interrupt") is True else []
+
+    def run(*args, **kw):
+        return crew(*pre, *args, **kw)
     if slot is not None and slot not in known("slots"):
         return 400, "Unknown slot. Refresh and try again.", None
     if conv is not None and conv not in known("convs"):
         return 400, "Unknown conversation. Refresh and try again.", None
     s = str(slot)
     if op == "stop" and slot:
-        return (*crew("stop", s), "Stopped.")
+        return (*run("stop", s), "Stopped.")
     if op == "relaunch" and slot:
-        return (*crew("relaunch", s), "Restarted.")
+        return (*run("relaunch", s), "Restarted.")
     if op == "switch" and slot and conv:
-        return (*crew("switch", s, conv), "Done.")
+        return (*run("switch", s, conv), "Done.")
     if op == "new" and slot:
         title = (a.get("title") or "").strip()
         if not TITLE_RE.match(title):
             return 400, "Title needs 1–80 printable characters.", None
-        return (*crew("new", title, "--slot", s), "Started.")
+        return (*run("new", title, "--slot", s), "Started.")
     if op == "clear" and slot:
-        return (*crew("clear", s, "--yes"), "Context cleared. The old conversation is deleted.")
+        return (*run("clear", s, "--yes"), "Context cleared. The old conversation is deleted.")
     if op == "prompt" and slot:
         text = (a.get("text") or "").strip()
         if not PROMPT_RE.match(text):
             return 400, "The prompt needs 1–4000 characters.", None
-        return (*crew("prompt", s, text), "Sent.")
+        return (*run("prompt", s, text), "Sent.")
     if op == "delete" and conv:
-        return (*crew("delete", conv, "--yes"), "Deleted.")
+        return (*run("delete", conv, "--yes"), "Deleted.")
     if op == "defaults":
         args, err = defaults_args(a)
         if err:
             return 400, err, None
-        return (*crew("setup", *args), "Defaults saved.")
+        return (*run("setup", *args), "Defaults saved.")
     if op == "boot" and a.get("value") in ("on", "off"):
-        return (*crew("boot", a["value"]), "Starts on boot." if a["value"] == "on" else "Does not start on boot.")
+        return (*run("boot", a["value"]), "Starts on boot." if a["value"] == "on" else "Does not start on boot.")
     if op == "start":
-        return (*crew("start", timeout=600), "Saved sessions started.")
+        return (*run("start", timeout=600), "Saved sessions started.")
     if op == "save":
-        return (*crew("save"), "Current sessions saved.")
+        return (*run("save"), "Current sessions saved.")
     if op == "relabel":
-        return (*crew("relabel"), "Window labels updated.")
+        return (*run("relabel"), "Window labels updated.")
     if op == "restart":
-        return (*crew("restart"), "Restarting every session in 15 seconds.")
+        return (*run("restart"), "Restarting every session in 15 seconds.")
     if op == "update":
-        return (*crew("update", timeout=600), "Updated. Restarting every session in 15 seconds.")
+        return (*run("update", timeout=600), "Updated. Restarting every session in 15 seconds.")
     return 400, "Unknown action.", None
 
 

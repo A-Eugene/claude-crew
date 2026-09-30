@@ -3,9 +3,9 @@ Description=Claude Crew web page for the claude-crew fleet (127.0.0.1:3115)
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/python3 /root/.claude/skills/claude-crew/web/server.py
-WorkingDirectory=/root/.claude/skills/claude-crew/web
-Environment=HOME=/root
+ExecStart=/usr/bin/python3 %h/.claude/skills/claude-crew/web/server.py
+WorkingDirectory=%h/.claude/skills/claude-crew/web
+Environment=HOME=%h
 Restart=always
 RestartSec=3
 

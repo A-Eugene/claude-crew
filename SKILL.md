@@ -146,6 +146,25 @@ inline rather than deferring again.
 Report it as scheduled, not as done. The result is only visible in the next
 session, through `claude-crew status` and the unit's journal.
 
+## Busy sessions are not interrupted
+
+Commands that stop a session refuse one that is working, waiting on a question
+or permission prompt, or holding an unsent draft: `stop`, `switch`, `relaunch`,
+`model`, `effort`, `clear`, `new --force`, `delete` of a live conversation, and
+`start --force`. When one is refused, tell the user which session is busy and
+why. Pass `--interrupt` only when the user has said to interrupt it.
+
+`restart`, `update` and anything run with `--self` wait up to 15 minutes for a
+busy session to go idle instead. An unsent draft still stops them.
+
+## Project skills
+
+Sessions start in the crew's `WORKDIR`, so a project's own skills and
+`CLAUDE.md` never load by themselves. The crew's `local-skills-guard.sh` hook
+names them the first time a session touches that project, and refuses the first
+write there until they are read. When it refuses, read what it lists, then retry.
+Read a project's skills as plain files. The Skill tool cannot see them.
+
 ## Clearing a session's context
 
 `claude-crew clear` is NOT Claude Code's `/clear`. Say so whenever you offer
@@ -303,7 +322,7 @@ safe to edit by hand.
 
 | Key | Default | Notes |
 |---|---|---|
-| `WORKDIR` | `/root` | Working directory, and which transcript store is read. |
+| `WORKDIR` | home directory (`/root` on this host) | Where every session starts, and which transcript store is read. Changing it is refused while a slot is running or saved. |
 | `SLOTS` | `5` | Number of parking spaces. Raise it when `status` reports an unplaced conversation. |
 | `MODEL` | `opus` | An alias resolves to the latest of that family. |
 | `EFFORT` | `high` | `low` `medium` `high` `xhigh` `max` |

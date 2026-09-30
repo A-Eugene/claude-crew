@@ -83,7 +83,7 @@ select, input[type=number], input[type=text] {
   font: 400 15px/1 var(--sans); height: 40px; padding: 0 12px; border-radius: 0; width: 100%;
   background-color: var(--layer); color: var(--text); border: 0; border-bottom: 1px solid var(--line-strong);
 }
-select { font-family: var(--mono); font-size: 14px; }
+select, input.mono { font-family: var(--mono); font-size: 14px; }
 input[type=number] { font-variant-numeric: tabular-nums; max-width: 120px; }
 .seg { display: flex; flex-wrap: wrap; border: 1px solid var(--line-strong); width: fit-content; }
 .seg label { position: relative; }
@@ -190,6 +190,10 @@ textarea { min-height: 120px; resize: vertical; }
         <input id="dAuto" name="autocompact" type="text" autocomplete="off" spellcheck="false" placeholder="auto or 400k…">
       </div>
     </div>
+    <div class="field">
+      <label for="dWork">Working Directory</label>
+      <input id="dWork" name="workdir" type="text" class="mono" autocomplete="off" spellcheck="false" translate="no" placeholder="/home/you…">
+    </div>
     <label class="switch"><input type="checkbox" id="dRemote" name="remote_control"> Remote Control</label>
     <label class="switch"><input type="checkbox" id="dBoot" name="boot"> Start on Boot</label>
     <div class="formfoot">
@@ -276,9 +280,30 @@ function metaLine(s) {
   return el("div", { class: "meta" }, stateBadge(s), el("span", { class: "dim" }, " · "), model, el("span", { class: "dim" }, " · "), effort, follows);
 }
 
+const BUSY = ["working", "dialog", "draft"];
+const isBusy = (s) => s && BUSY.includes(s.state);
+
 function busyWarning(s, verb) {
   return s.state === "working" ? el("p", { class: "warn" }, `This session is working. ${verb} ends its current answer.`) :
+         s.state === "dialog" ? el("p", { class: "warn" }, `This session is waiting on a question or permission prompt. ${verb} cancels it.`) :
          s.state === "draft" ? el("p", { class: "warn" }, `This session has an unsent draft. ${verb} discards it.`) : null;
+}
+
+// The primary button of a confirm dialog. A busy session gets a red
+// "Interrupt & …" button that sends the interrupt flag; otherwise the plain one.
+function confirmBtn(s, label, busyText, payload, close, danger) {
+  const busy = isBusy(s);
+  return el("button", { class: busy || danger ? "danger" : null, type: "button", onclick: async (e) => {
+    if (await act({ ...payload, ...(busy ? { interrupt: true } : {}) }, e.currentTarget, busyText)) close();
+  } }, busy ? `Interrupt & ${label}` : label);
+}
+
+// A checkbox that must be ticked before a pick list acts on a busy session.
+function interruptGate(needed) {
+  if (!needed) return { box: null, ok: () => true };
+  const cb = el("input", { type: "checkbox", id: "intr" });
+  return { box: el("label", { class: "switch" }, cb, "Interrupt the running session"),
+           ok: () => cb.checked || (toast("Tick “Interrupt the running session” first, or wait until it is idle."), false) };
 }
 
 function slotMenu(s) {
@@ -300,14 +325,17 @@ function slotMenu(s) {
 
 function pickConv(s, close) {
   if (!S.conversations.length) return toast("There are no stopped sessions to bring in.");
+  let gate;
   openDialog(close2 => [
     el("h3", {}, s ? `Replace “${name(s.title)}”` : "Resume a Session"),
     s ? busyWarning(s, "Replacing it") : null,
+    (gate = interruptGate(isBusy(s))).box,
     el("div", { class: "pick" }, S.conversations.map(c =>
       el("button", { type: "button", onclick: async (e) => {
         const target = s ? s.slot : (S.slots.find(x => x.state === "free") || {}).slot;
         if (!target) return toast("There is no free slot. Stop a session or raise Slots in Defaults.");
-        if (await act({ op: "switch", slot: target, conv: c.id }, e.currentTarget, "Starting…")) close2();
+        if (!gate.ok()) return;
+        if (await act({ op: "switch", slot: target, conv: c.id, ...(isBusy(s) ? { interrupt: true } : {}) }, e.currentTarget, "Starting…")) close2();
       } }, el("span", { class: "t" }, name(c.title) || c.id.slice(0, 8)), el("span", { class: "muted mono", translate: "no" }, c.id.slice(0, 8)))
     )),
     el("div", { class: "foot" }, el("button", { class: "ghost", type: "button", onclick: close2 }, "Cancel")),
@@ -315,13 +343,17 @@ function pickConv(s, close) {
 }
 
 function pickSwap(s, others) {
+  let gate;
   openDialog(close => [
     el("h3", {}, `Swap “${name(s.title)}”`),
     el("p", {}, "Both sessions keep their conversation, model and effort. Only their slots change."),
-    [s, ...others].some(x => x.state === "working") ? el("p", { class: "warn" }, "A working session ends its current answer.") : null,
+    [s, ...others].some(isBusy) ? el("p", { class: "warn" }, "A session that is working, waiting on a prompt or holding a draft loses it when swapped.") : null,
+    (gate = interruptGate([s, ...others].some(isBusy))).box,
     el("div", { class: "pick" }, others.map(o =>
       el("button", { type: "button", onclick: async (e) => {
-        if (await act({ op: "switch", slot: s.slot, conv: o.id }, e.currentTarget, "Swapping…")) close();
+        const busy = isBusy(s) || isBusy(o);
+        if (busy && !gate.ok()) return;
+        if (await act({ op: "switch", slot: s.slot, conv: o.id, ...(busy ? { interrupt: true } : {}) }, e.currentTarget, "Swapping…")) close();
       } }, el("span", { class: "t" }, `${o.slot}  ${name(o.title)}`), el("span", { class: "muted" }, STATE_LABEL[o.state]))
     )),
     el("div", { class: "foot" }, el("button", { class: "ghost", type: "button", onclick: close }, "Cancel")),
@@ -335,7 +367,7 @@ function confirmStop(s) {
     busyWarning(s, "Stopping it"),
     el("div", { class: "foot" },
       el("button", { class: "ghost", type: "button", onclick: close }, "Cancel"),
-      el("button", { type: "button", onclick: async (e) => { if (await act({ op: "stop", slot: s.slot }, e.currentTarget, "Stopping…")) close(); } }, "Stop Session")),
+      confirmBtn(s, "Stop", "Stopping…", { op: "stop", slot: s.slot }, close)),
   ]);
 }
 
@@ -346,7 +378,7 @@ function confirmRelaunch(s) {
     busyWarning(s, "Restarting it"),
     el("div", { class: "foot" },
       el("button", { class: "ghost", type: "button", onclick: close }, "Cancel"),
-      el("button", { type: "button", onclick: async (e) => { if (await act({ op: "relaunch", slot: s.slot }, e.currentTarget, "Restarting…")) close(); } }, "Restart Session")),
+      confirmBtn(s, "Restart", "Restarting…", { op: "relaunch", slot: s.slot }, close)),
   ]);
 }
 
@@ -358,7 +390,7 @@ function confirmClear(s) {
     busyWarning(s, "Clearing it"),
     el("div", { class: "foot" },
       el("button", { class: "ghost", type: "button", onclick: close }, "Cancel"),
-      el("button", { class: "danger", type: "button", onclick: async (e) => { if (await act({ op: "clear", slot: s.slot }, e.currentTarget, "Clearing…")) close(); } }, "Clear Context")),
+      confirmBtn(s, "Clear Context", "Clearing…", { op: "clear", slot: s.slot }, close, true)),
   ]);
 }
 
@@ -415,17 +447,22 @@ function confirmDelete(c) {
 
 function confirmFleet(kind) {
   const restart = kind === "restart";
-  const working = S.slots.filter(s => s.state === "working").length;
-  openDialog(close => [
+  const busy = S.slots.filter(isBusy).length;
+  const go = (interrupt, label, busyText, cls) => el("button", { class: cls, type: "button", onclick: async (e) => {
+    if (await act({ op: kind, ...(interrupt ? { interrupt: true } : {}) }, e.currentTarget, busyText)) close_();
+  } }, label);
+  let close_;
+  openDialog(close => { close_ = close; return [
     el("h3", {}, restart ? "Restart All Sessions?" : "Update Claude Code?"),
-    el("p", {}, restart ? "Every session stops and resumes its conversation within about a minute." :
+    el("p", {}, restart ? "Every session stops and resumes its conversation." :
                           "Installs the latest Claude Code, then restarts every session."),
-    working ? el("p", { class: "warn" }, `${working} ${working === 1 ? "session is" : "sessions are"} working and will lose the current answer.`) : null,
+    busy ? el("p", { class: "warn" }, `${busy} ${busy === 1 ? "session is" : "sessions are"} busy. “When Idle” waits up to 15 minutes for them to finish, and a session holding an unsent draft stops the restart.`) : null,
     el("div", { class: "foot" },
       el("button", { class: "ghost", type: "button", onclick: close }, "Cancel"),
-      el("button", { type: "button", onclick: async (e) => { if (await act({ op: kind }, e.currentTarget, restart ? "Restarting…" : "Updating…")) close(); } },
-        restart ? "Restart All" : "Update & Restart")),
-  ]);
+      busy ? go(true, "Interrupt Now", restart ? "Restarting…" : "Updating…", "danger") : null,
+      go(false, busy ? (restart ? "Restart When Idle" : "Update When Idle") : (restart ? "Restart All" : "Update & Restart"),
+         restart ? "Restarting…" : "Updating…", null)),
+  ]; });
 }
 
 function renderSlots() {
@@ -462,7 +499,7 @@ function renderConvs() {
       el("button", { class: "ghost", type: "button", disabled: !hasFree, title: hasFree ? null : "No free slot",
         onclick: async (e) => { const f = S.slots.find(s => s.state === "free"); if (f) await act({ op: "switch", slot: f.slot, conv: c.id }, e.currentTarget, "Starting…"); } }, "Resume"),
       el("button", { class: "quiet", type: "button", "aria-label": `Delete ${c.title || c.id.slice(0, 8)}`, onclick: () => confirmDelete(c) }, "Delete…")))),
-    rest > 0 ? el("li", {}, el("button", { class: "ghost more", type: "button", onclick: () => { showAll = true; renderConvs(); } }, `Show All (${S.conversations.length})`)) : null);
+    ...(rest > 0 ? [el("li", {}, el("button", { class: "ghost more", type: "button", onclick: () => { showAll = true; renderConvs(); } }, `Show All (${S.conversations.length})`))] : []));
 }
 
 function renderDefaults() {
@@ -477,6 +514,7 @@ function renderDefaults() {
   const perms = PERMS.includes(d.permission_mode) ? PERMS : [d.permission_mode, ...PERMS];
   $("dPerm").replaceChildren(...perms.map(p => el("option", { value: p, selected: p === d.permission_mode }, p)));
   $("dAuto").value = d.autocompact;
+  $("dWork").value = d.workdir || "";
   $("dRemote").checked = d.remote_control === "on";
   $("dBoot").checked = S.boot === "on";
   const n = S.slots.filter(s => s.id && s.follows_default_model && s.follows_default_effort).length;
@@ -537,8 +575,13 @@ $("defaultsForm").addEventListener("submit", async (e) => {
   const au = $("dAuto");
   au.setCustomValidity(/^(auto|[0-9]+[kKmM]?)$/.test(auto) ? "" : "Enter auto or a size such as 400k.");
   if (!au.reportValidity()) return au.focus();
-  let ok = await act({ op: "defaults", model: f.get("model"), effort: f.get("effort"), slots, permission_mode: f.get("permission_mode"),
-                       autocompact: auto, remote_control: $("dRemote").checked ? "on" : "off" }, $("saveDefaults"), "Saving…");
+  const wd = $("dWork");
+  wd.setCustomValidity(wd.value.trim().startsWith("/") ? "" : "Enter an absolute path, such as /home/you.");
+  if (!wd.reportValidity()) return wd.focus();
+  const payload = { op: "defaults", model: f.get("model"), effort: f.get("effort"), slots, permission_mode: f.get("permission_mode"),
+                    autocompact: auto, remote_control: $("dRemote").checked ? "on" : "off" };
+  if (wd.value.trim() !== S.defaults.workdir) payload.workdir = wd.value.trim();
+  let ok = await act(payload, $("saveDefaults"), "Saving…");
   const boot = $("dBoot").checked ? "on" : "off";
   if (ok && boot !== S.boot) ok = await act({ op: "boot", value: boot }, $("saveDefaults"), "Saving…");
   if (ok) { dirty = false; renderDefaults(); }

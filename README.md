@@ -111,6 +111,24 @@ and end there, leaving it empty.
 `delete` refuses your own conversation with no override, because a deleted
 transcript cannot be brought back.
 
+## Busy sessions are not interrupted
+
+Every command that stops a session checks it first: `stop`, `switch`,
+`relaunch`, `model`, `effort`, `clear`, `new --force`, `delete` of a live
+conversation, and `start --force`. A session that is working on a turn, waiting
+on a question or permission prompt, or holding an unsent draft is refused, and
+nothing is done. `--interrupt` acts anyway.
+
+`restart` and `update` wait instead of refusing. At the scheduled time, each
+busy session gets up to 15 minutes to finish its turn. A session still holding
+an unsent draft stops the restart, since waiting will not clear it. A command a
+session aims at its own slot with `--self` waits the same way, which lets the
+turn that asked for it finish first.
+
+The web page offers the same choice explicitly: a busy session's dialog shows an
+"Interrupt & …" button, and Restart All offers "Restart When Idle" or
+"Interrupt Now".
+
 ## Clearing a session's context
 
 `claude-crew clear <target>` is not Claude Code's `/clear`, and the two do
@@ -173,20 +191,36 @@ fleet after the machine comes back.
 
 ## Install
 
-```sh
-git clone https://github.com/A-Eugene/claude-crew.git
-cp -r claude-crew ~/.claude/skills/claude-crew
-chmod +x ~/.claude/skills/claude-crew/bin/claude-crew
-ln -s ~/.claude/skills/claude-crew/bin/claude-crew /usr/local/bin/claude-crew
-claude-crew setup
-```
+[INSTALL.md](INSTALL.md) has the steps, written so a person or an AI agent can
+follow them and check each one.
 
 Config lands at `~/.claude/skills/claude-crew/crew.conf`. It is gitignored.
-**A reinstall must not overwrite it or `slots.state`** — use
+**A reinstall must not overwrite it or `slots.state`.** Use
 `rsync --exclude=crew.conf --exclude=slots.state` if you script the copy.
 
 As a Claude Code skill, `SKILL.md` also lets any session drive the fleet by
 asking in plain language.
+
+## Project skills
+
+Every crew session starts in `WORKDIR`. Claude Code registers skills only from
+the directory a session starts in, so a project below `WORKDIR` never has its own
+`.claude/skills`, `.agents/skills` or `CLAUDE.md` loaded. Bash commands trigger
+no discovery at all, and Edit and Write load nested skills only after the edit
+is issued.
+
+`hooks/local-skills-guard.sh` covers this. It is a PreToolUse hook on
+`Edit|Write|Bash`. The first time a session touches a project that ships skills,
+it names the skills and the project's `CLAUDE.md`. The first write into that
+project is refused until they have been read, once per project per session. A
+session started inside the project already has its skills, so the hook leaves it
+alone.
+
+It keeps two markers per session and project, one for the notice and one for
+the refusal. With one shared marker, a first `ls` spends it on a notice that gets
+ignored, and the write that follows goes through unread. The Bash test for a
+write matches `rm`, `mv`, `cp`, redirects and `sed -i`, so an unrelated command
+naming a project path can use up the one refusal.
 
 ## Web page
 
@@ -207,14 +241,7 @@ It signs in with one password. The server keeps a PBKDF2 hash of it and issues a
 30-day login token in an HttpOnly cookie. Five wrong passwords from one address
 lock that address out for 15 minutes.
 
-```sh
-python3 ~/.claude/skills/claude-crew/web/server.py set-password
-cp ~/.claude/skills/claude-crew/web/claude-crew-web.service /etc/systemd/system/
-systemctl enable --now claude-crew-web
-certbot certonly --nginx -d crew.example.com
-sed 's/crew.example.com/<your host>/g' ~/.claude/skills/claude-crew/web/nginx.conf > /etc/nginx/conf.d/claude-crew-web.conf
-nginx -t && systemctl reload nginx
-```
+[INSTALL.md](INSTALL.md) covers the service and the HTTPS proxy.
 
 The password hash and the login tokens live in `~/.config/claude-crew-web/`,
 outside the repository. Setting a new password signs every browser out.
@@ -223,10 +250,10 @@ outside the repository. Setting a new password signs every browser out.
 
 | Key | Default | Notes |
 |---|---|---|
-| `WORKDIR` | `/root` | Working directory, and which transcript store is read. |
+| `WORKDIR` | your home directory | Where every session starts, and which transcript store is read. Changing it is refused while a slot is running or saved. |
 | `SLOTS` | `5` | Number of parking spaces. Lowering it closes empty panes above the new count, and is refused while one of them still runs a session. |
-| `MODEL` | `opus` | An alias resolves to the latest of that family. |
-| `EFFORT` | `high` | `low` `medium` `high` `xhigh` `max` |
+| `MODEL` | `claude-opus-5-5` | A model ID, or an alias such as `opus`, which resolves to the latest of that family. |
+| `EFFORT` | `medium` | `low` `medium` `high` `xhigh` `max` |
 | `PERMISSION_MODE` | `auto` | |
 | `REMOTE_CONTROL` | `on` | Named after the conversation title. |
 | `AUTOCOMPACT` | `auto` | Passed as `--autocompact`: `auto`, or a window from 100k to 1M tokens. |

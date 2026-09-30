@@ -56,6 +56,10 @@
 #                have restarted it. `delete` ignores --self: the caller's own
 #                conversation is never deleted.
 #   --in <secs>  how long --self waits before firing (default 15).
+#   --interrupt  act on a session even while it is working, waiting on a
+#                prompt, or holding an unsent draft. Without it those are refused.
+#   --wait-idle  wait up to 15 minutes for a working session to finish instead
+#                of refusing. --self and restart add it themselves.
 #
 # <target> is a slot number, a tmux session name, or a case-insensitive
 # substring of a conversation title ("click" finds "[VPS] Click Clack").
@@ -90,7 +94,7 @@ PATH="$HOME/.local/bin:$PATH"; export PATH
 if [ -x /usr/bin/python3 ]; then python3() { /usr/bin/python3 "$@"; }; fi
 
 # --- config -----------------------------------------------------------------
-WORKDIR=/root
+WORKDIR="$HOME"
 SLOTS=5
 MODEL=claude-opus-5-5
 EFFORT=medium
@@ -113,6 +117,10 @@ ALLOW_SELF=0
 DEFER_DELAY=15
 # Every argument this run was given, for re-running it on a timer.
 ORIG_ARGS=()
+# Set by --interrupt: act on a session even while it is working.
+INTERRUPT=0
+# Set by --wait-idle: wait for a working session to go idle instead of refusing.
+WAIT_IDLE=0
 
 die() { printf 'crew: %s\n' "$*" >&2; exit 1; }
 
@@ -410,7 +418,7 @@ defer_self() {                        # $1=what was asked
     die "$1 targets your own slot, and systemd-run is missing so it cannot be deferred. Nothing was done."
   "${CREW_SYSTEMD_RUN:-systemd-run}" --on-active="$DEFER_DELAY" --unit="$unit" --collect \
     --setenv=HOME="$HOME" --property=KillMode=process \
-    "$CREW_DIR/bin/claude-crew" ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"}
+    "$CREW_DIR/bin/claude-crew" --wait-idle ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"}
   echo "$1 targets $(sess_name "$SELF_SLOT"), the session you are running in."
   echo "scheduled $unit in ${DEFER_DELAY}s, so it runs once this turn has ended"
   echo "this session stops when it fires, and comes back on the same conversation"
@@ -426,6 +434,58 @@ refuse_self() {
   die "$2 would stop the session you are running in ($(sess_name "$1"), ${SELF_CONV:0:8}).
      Pass --self to run it on a timer instead, after this turn ends.
      'claude-crew restart' does the same for every slot at once."
+}
+
+# What a slot is doing: free, idle, working, dialog (a question or permission
+# prompt is waiting) or draft (unsent text in the input box). Call after
+# scan_slots.
+slot_activity() {       # $1=slot
+  local n="$1" pid="${PID_OF_SLOT[$1]:-}" busy="" box scr
+  [ -n "$pid" ] || { echo free; return 0; }
+  # Claude Code keeps live state per process in ~/.claude/sessions/<pid>.json.
+  local sf="$HOME/.claude/sessions/$pid.json"
+  if [ -f "$sf" ]; then
+    busy=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("status",""))' "$sf" 2>/dev/null || true)
+  fi
+  # Dialogs and the input box sit at the bottom; conversation text above them
+  # can quote the same words. The input box draws a no-break space after the
+  # prompt mark, and shows a suggested next prompt as dim text, which is not a
+  # draft.
+  box=$(tmux capture-pane -p -e -J -t "$(sess_name "$n")" 2>/dev/null | grep '❯' | tail -1 || true)
+  scr=$(tmux capture-pane -p -J -t "$(sess_name "$n")" 2>/dev/null | sed 's/\xc2\xa0/ /g' | grep -v '^\s*$' | tail -8 || true)
+  if [[ "$box" == *$'\e[2m'* ]]; then scr=$(sed 's/^❯ .*/❯/' <<<"$scr"); fi
+  if grep -qE 'Enter to (confirm|select|continue)|Esc to cancel' <<<"$scr"; then echo dialog
+  elif [ "$busy" = busy ] || grep -q 'esc to interrupt' <<<"$scr"; then echo working
+  elif grep -qE '^❯ +[^ ]' <<<"$scr"; then echo draft
+  else echo idle; fi
+}
+
+# Refuse to stop a session that is working, waiting on a prompt, or holding an
+# unsent draft. --interrupt overrides. With --wait-idle, wait up to 15 minutes
+# for a working or prompting session to finish instead. A draft is never waited
+# on, since nothing will clear it. $1=slot $2=what was asked
+guard_busy() {
+  [ "$INTERRUPT" = 1 ] && return 0
+  local n="$1" a i why
+  a=$(slot_activity "$n")
+  if [ "$WAIT_IDLE" = 1 ] && [[ "$a" == working || "$a" == dialog ]]; then
+    echo "waiting for $(sess_name "$n") ($(title_of_slot "$n")) to finish its turn"
+    for ((i = 0; i < 180; i++)); do
+      sleep 5
+      scan_slots
+      a=$(slot_activity "$n")
+      [[ "$a" == working || "$a" == dialog ]] || break
+    done
+  fi
+  case "$a" in
+    working) why="is working on a turn" ;;
+    dialog)  why="is waiting on a question or permission prompt" ;;
+    draft)   why="has an unsent draft in its input box" ;;
+    *) return 0 ;;
+  esac
+  [ "$WAIT_IDLE" = 1 ] && [ "$a" != draft ] && why="$why after 15 minutes of waiting"
+  die "$2: $(sess_name "$n") ($(title_of_slot "$n")) $why. Nothing was done.
+     Wait until it is idle, or pass --interrupt to $2 anyway."
 }
 
 free_slot() {           # lowest slot with no live claude at all
@@ -769,7 +829,7 @@ cmd_setup() {
   # call from start/restart as a gate.
   [ -f "$CONF" ] && { # shellcheck disable=SC1090
     source "$CONF"; }
-  local slots_given=0
+  local slots_given=0 old_workdir; old_workdir=$(cd "$WORKDIR" 2>/dev/null && pwd || printf '%s' "$WORKDIR")
   while [ $# -gt 0 ]; do
     case "$1" in
       --workdir)         WORKDIR="$2"; shift 2 ;;
@@ -797,6 +857,22 @@ cmd_setup() {
   case "$REMOTE_CONTROL" in on|off) ;; *) die "setup: --remote-control must be on or off" ;; esac
   # claude rejects a bad value at launch, which would leave every pane at a bare shell.
   [[ "$AUTOCOMPACT" =~ ^(auto|[0-9]+[kKmM]?)$ ]] || die "setup: --autocompact must be auto or a size from 100k to 1M"
+
+  # Transcripts are stored per working directory, and claude resumes a
+  # conversation only from the directory it was started in. A slot running or
+  # saved under the current directory could not come back under a new one.
+  WORKDIR=$(cd "$WORKDIR" && pwd)
+  if [ -f "$CONF" ] && [ "$WORKDIR" != "$old_workdir" ]; then
+    local w
+    for s in $(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E "^${TMUX_PREFIX}[0-9]+\$" || true); do
+      w=${s#"$TMUX_PREFIX"}
+      [ -z "$(claude_pid_in "$w")" ] ||
+        die "setup: $s still runs a session in $old_workdir. Stop every slot before changing the working directory."
+    done
+    if [ -f "$STATE" ] && grep -qE '^[0-9]+'$'\t' "$STATE"; then
+      die "setup: saved slots belong to $old_workdir and cannot resume from $WORKDIR. Stop every slot first (claude-crew stop <n>)."
+    fi
+  fi
 
   # Slots above the count are no longer scanned, so a claude left running in one
   # would keep going where nothing can see or stop it.
@@ -842,23 +918,12 @@ cmd_status_json() {
       IFS=$'\t' read -r m e < <(kept_flags "$n" "$id" 1)
       # Claude Code keeps live state per process in ~/.claude/sessions/<pid>.json:
       # "status" busy|idle and "bridgeSessionId", the remote-control session.
-      local sf="$HOME/.claude/sessions/$pid.json" busy="" bridge=""
+      local sf="$HOME/.claude/sessions/$pid.json" bridge=""
       if [ -f "$sf" ]; then
-        IFS=$'\t' read -r busy bridge < <(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print("%s\t%s"%(d.get("status",""),d.get("bridgeSessionId","")))' "$sf" 2>/dev/null)
+        bridge=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("bridgeSessionId",""))' "$sf" 2>/dev/null || true)
       fi
       [ -n "$bridge" ] && url="https://claude.ai/code/$bridge"
-      # Dialogs and the input box sit at the bottom; conversation text above
-      # them can quote the same words.
-      # The input box draws a no-break space after the prompt mark, and shows a
-      # suggested next prompt as dim text. Only text that is not dim is a draft.
-      local box
-      box=$(tmux capture-pane -p -e -J -t "$(sess_name "$n")" 2>/dev/null | grep '❯' | tail -1 || true)
-      scr=$(tmux capture-pane -p -J -t "$(sess_name "$n")" 2>/dev/null | sed 's/\xc2\xa0/ /g' | grep -v '^\s*$' | tail -8 || true)
-      if [[ "$box" == *$'\e[2m'* ]]; then scr=$(sed 's/^❯ .*/❯/' <<<"$scr"); fi
-      if grep -qE 'Enter to (confirm|select|continue)|Esc to cancel' <<<"$scr"; then state=dialog
-      elif [ "$busy" = busy ] || grep -q 'esc to interrupt' <<<"$scr"; then state=working
-      elif grep -qE '^❯ +[^ ]' <<<"$scr"; then state=draft
-      else state=idle; fi
+      state=$(slot_activity "$n")
     fi
     tsv+="$n"$'\t'"$id"$'\t'"$title"$'\t'"$state"$'\t'"$m"$'\t'"$e"$'\t'"${ST_MODEL[$n]:-}"$'\t'"${ST_EFFORT[$n]:-}"$'\t'"$url"$'\n'
   done
@@ -869,11 +934,12 @@ cmd_status_json() {
   local boot=off d dupes=""
   if [ -f "${CREW_UNIT_DIR:-/etc/systemd/system}/claude-crew.service" ]; then boot=on; fi
   for d in "${DUPES[@]}"; do dupes+="$d"$'\n'; done
-  SLOTS_TSV="$tsv" CONVS_TSV="$convs" DUPES_TXT="$dupes" python3 - "$MODEL" "$EFFORT" "$SLOTS" "$REMOTE_CONTROL" "$AUTOCOMPACT" "$PERMISSION_MODE" "$boot" <<'PY2'
+  SLOTS_TSV="$tsv" CONVS_TSV="$convs" DUPES_TXT="$dupes" python3 - "$MODEL" "$EFFORT" "$SLOTS" "$REMOTE_CONTROL" "$AUTOCOMPACT" "$PERMISSION_MODE" "$boot" "$WORKDIR" <<'PY2'
 import json, os, sys
-model, effort, slots, rc, ac, pm, boot = sys.argv[1:8]
+model, effort, slots, rc, ac, pm, boot, workdir = sys.argv[1:9]
 out = {"defaults": {"model": model, "effort": effort, "slots": int(slots),
-                    "remote_control": rc, "autocompact": ac, "permission_mode": pm},
+                    "remote_control": rc, "autocompact": ac, "permission_mode": pm,
+                    "workdir": workdir},
        "boot": boot, "slots": [], "conversations": [], "duplicates": []}
 for line in os.environ["DUPES_TXT"].splitlines():
     cid, a, b = (line.split() + ["", "", ""])[:3]
@@ -1042,6 +1108,10 @@ cmd_start() {
     # the caller. Under systemd there is no claude ancestor, SELF_SLOT is empty,
     # and this does not fire — which is how `restart` gets to do the same work.
     if [ -n "$SELF_SLOT" ]; then refuse_self "$SELF_SLOT" "start --force"; fi
+    local g
+    for ((g = 1; g <= SLOTS; g++)); do
+      if [ -n "${PID_OF_SLOT[$g]:-}" ]; then guard_busy "$g" "start --force"; fi
+    done
     # Stop every slot up front, in a separate pass. Conversations move between
     # slots between runs, so stopping slot-by-slot as we launch would start the
     # new slot 1 while that same conversation is still live in slot 4 — two
@@ -1168,10 +1238,15 @@ cmd_restart() {
   # Save what runs right now, so the restart relaunches exactly this set.
   save_state
   echo "saved the current slots to $STATE"
+  local when=--wait-idle
+  [ "$INTERRUPT" = 1 ] && when=--interrupt
   systemd-run --on-active="$delay" --unit="$unit" --collect \
     --setenv=HOME="$HOME" --property=KillMode=process \
-    "$CREW_DIR/bin/claude-crew" start --force
+    "$CREW_DIR/bin/claude-crew" "$when" start --force
   echo "scheduled $unit in ${delay}s"
+  if [ "$when" = --wait-idle ]; then
+    echo "a session still working then is waited on, up to 15 minutes. A session holding an unsent draft stops the restart. --interrupt skips both checks"
+  fi
   echo "verify after it fires:  claude-crew status  &&  journalctl -u $unit | grep verify:"
 }
 
@@ -1206,6 +1281,7 @@ cmd_new() {
       [ "$force" = 1 ] || die "new: $(sess_name "$slot") is busy ($(title_of_slot "$slot")).
      Pass --force to stop it, or leave out --slot to use a free slot."
       refuse_self "$slot" "new --force"
+      guard_busy "$slot" "new --force"
       echo "stopping $(sess_name "$slot") ($(title_of_slot "$slot"))"
       stop_claude_in "$slot"
       # Typing into a pane whose old claude is still alive would hand the new
@@ -1285,6 +1361,7 @@ cmd_clear() {
   # Aimed at your own slot this defers onto a timer, because stopping your own
   # claude kills the shell that would have started the replacement.
   refuse_self "$n" "clear"
+  guard_busy "$n" "clear"
 
   local m e sm="" se=""
   IFS=$'\t' read -r m e < <(kept_flags "$n" "$old")
@@ -1482,6 +1559,8 @@ cmd_delete() {
     return 0
   fi
 
+  if [ -n "${SLOT_OF_CONV[$id]:-}" ]; then guard_busy "${SLOT_OF_CONV[$id]}" "delete"; fi
+
   # Loop, because a conversation held by two slots at once (see DUPES) is
   # listed under only one of them per scan.
   local pid tries=0
@@ -1530,6 +1609,8 @@ cmd_switch() {
   local slot_b="${SLOT_OF_CONV[$id_b]:-}"
   # A swap stops both slots, so the far side needs the same guard as the near one.
   if [ -n "$slot_b" ]; then refuse_self "$slot_b" "switch"; fi
+  guard_busy "$slot_a" "switch"
+  if [ -n "$slot_b" ]; then guard_busy "$slot_b" "switch"; fi
 
   [ "$id_a" = "$id_b" ] && { echo "already: ${title_b:-${id_b:0:8}} is in $(sess_name "$slot_a")"; return 0; }
 
@@ -1670,6 +1751,7 @@ relaunch_with() {       # $1=target $2=model-or-empty $3=effort-or-empty [$4=wha
   detect_self
   local n; n=$(resolve_slot "$1")
   refuse_self "$n" "${4:-changing model or effort}"
+  guard_busy "$n" "${4:-changing model or effort}"
   local id="${CONV_OF_SLOT[$n]:-}" title; title=$(conv_title "$id"); title=${title:-$(title_of_slot "$n")}
   [ -n "$id" ] || die "$(sess_name "$n") holds no resumable conversation"
   local keep_m keep_e; IFS=$'\t' read -r keep_m keep_e < <(kept_flags "$n" "$id")
@@ -1723,6 +1805,7 @@ cmd_stop() {
   detect_self
   local n; n=$(resolve_slot "$1")
   refuse_self "$n" "stop"
+  guard_busy "$n" "stop"
   local id="${CONV_OF_SLOT[$n]:-}" title pid="${PID_OF_SLOT[$n]:-}"
   title=$(title_of_slot "$n")
   if [ -n "$pid" ]; then
@@ -1815,6 +1898,8 @@ ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --self) ALLOW_SELF=1; shift ;;
+    --interrupt) INTERRUPT=1; shift ;;
+    --wait-idle) WAIT_IDLE=1; shift ;;
     --in)
       [ $# -ge 2 ] || die "--in needs a number of seconds"
       [[ "$2" =~ ^[0-9]+$ ]] || die "--in takes seconds as a number, not '$2'"
