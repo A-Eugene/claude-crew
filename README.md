@@ -59,7 +59,7 @@ level cheap rather than destructive.
 | `claude-crew save` | Record what every slot runs, with its model and effort, as the saved slots. |
 | `claude-crew boot on\|off\|status` | Install or remove a systemd unit that runs `claude-crew start` after a reboot. |
 | `claude-crew new "<title>" [--slot <n> [--force]]` | Start a brand new conversation in the first free slot, or in slot n. `--force` stops what slot n runs. |
-| `claude-crew clear <target> ["<title>"]` | Replace a slot's conversation with a brand new one, under a name nothing else holds. The old conversation is kept. |
+| `claude-crew clear <target> [--yes]` | Clear a slot's context: restart it on a new, empty conversation with the same title, model and effort, then delete the conversation it replaced. Without `--yes` it only prints what would happen. Not Claude Code's `/clear`. |
 | `claude-crew delete <conversation> [--yes]` | Stop it if live, then delete its transcript, its sidecar directory and its uploads. Without `--yes` it only prints what would go. There is no backup. |
 | `claude-crew switch <A> <B>` | Put conversation B in A's slot. Swaps if B is already live. |
 | `claude-crew prompt <target> <text>` | Type keystrokes into that slot's input box. Not a messaging channel — see below. |
@@ -111,23 +111,46 @@ and end there, leaving it empty.
 `delete` refuses your own conversation with no override, because a deleted
 transcript cannot be brought back.
 
-## Starting over in a slot
+## Clearing a session's context
 
-`/clear` mints a new conversation inside the same process, and that process
-still carries the `-n` name it was launched with. The new conversation is
-therefore born holding a name another conversation already has. Do it twice and
-the resume picker lists three conversations under one name with nothing to tell
-them apart.
+`claude-crew clear <target>` is not Claude Code's `/clear`, and the two do
+different things.
 
-`claude-crew clear <target>` does the same job without that. It stops the slot,
-starts a new conversation there, and gives it a name nothing else holds:
-`Notes`, then `Notes 2`, then `Notes 3`. Pass a title to choose one yourself.
-The old conversation is kept and stays resumable, because clearing is not
-deleting.
+- **Claude Code's `/clear`** starts a new conversation inside the same process
+  and keeps the old one on disk. The process still carries the `-n` name it was
+  launched with, so the new conversation gets the same title. The old one stays
+  resumable, and the store ends up with two conversations under one name.
+- **`claude-crew clear`** empties the context for good. It restarts the slot on
+  a new, empty conversation with the same title, model and effort, then deletes
+  the old conversation with its sidecar and uploads. There is no backup.
+
+Clearing deletes, so it asks first, like `delete`. A bare run prints the plan
+and changes nothing. `--yes` carries it out. The web page asks in a dialog.
+
+```
+claude-crew clear 4          # print what would be deleted
+claude-crew clear 4 --yes    # clear it
+```
+
+The remote-control link changes with it, because remote control follows the
+conversation.
 
 Aimed at the slot you are running in, it defers onto a timer like every other
 stop path, since stopping your own claude kills the shell that would have
 started the replacement.
+
+**A `/clear` typed anyway** is caught by a SessionStart hook. `claude-crew
+cleared` saves the slot as holding the new conversation, and puts a notice in
+the new session's context: the previous conversation still exists under the
+same name, and the session should ask the user before deleting it. The hook
+deletes nothing. Register it in `~/.claude/settings.json`:
+
+```json
+{"hooks": {"SessionStart": [{"matcher": "clear", "hooks": [{"type": "command",
+  "command": "CREW_WEB_URL=https://crew.example.com ~/.claude/skills/claude-crew/bin/claude-crew cleared"}]}]}}
+```
+
+`CREW_WEB_URL` is optional. When set, the notice points at the web page.
 
 ## Saved slots
 

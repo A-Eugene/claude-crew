@@ -2,8 +2,10 @@
 name: claude-crew
 description: >-
   Manage the tmux fleet of Claude Code sessions on this host: start them,
-  restart them, start a brand new conversation, delete a conversation for good,
-  move a conversation into a different slot, change a session's model or effort,
+  restart them, start a brand new conversation, clear a session's context
+  (which deletes the conversation it replaces, unlike Claude Code's /clear),
+  delete a conversation for good, move a conversation into a different slot,
+  change a session's model or effort,
   or type keystrokes into a session's terminal input box. Use
   when asked to start/restart the claudes, switch a session, see which
   conversation is in which tmux slot, change a running session's model or effort
@@ -12,8 +14,8 @@ description: >-
   Make sure to load this skill whenever the user mentions the claudes, the
   fleet, a slot, or names another session at all — even when they do not say
   "claude-crew" and even when the request looks like ordinary shell work.
-  Triggers: crew, claude-crew, restart the claudes, start the claudes, new
-  claude session, delete a conversation, which conversation is in which slot,
+  Triggers: crew, claude-crew, clear context, clear this session, /clear,
+  restart the claudes, start the claudes, new claude session, delete a conversation, which conversation is in which slot,
   switch TR1 to Click Clack, change slot 2 to sonnet, bump effort to xhigh,
   update claude code, type this into Claude3, prompt this to Trading Research 1,
   send this to another session, unstick a stuck session. Load it also before ANY tmux command that kills, stops or restarts something, even when the fleet was never mentioned: `tmux kill-server` ends every session on this host including your own.
@@ -64,7 +66,7 @@ when a bare `claude-crew` fails: `/root/.claude/skills/claude-crew/bin/claude-cr
 | `claude-crew save` | Record what every slot runs, with its model and effort, as the saved slots. |
 | `claude-crew boot on\|off\|status` | Install or remove a systemd unit that runs `claude-crew start` after a reboot. |
 | `claude-crew new "<title>" [--slot <n> [--force]]` | Start a brand new conversation in the first free slot, or in slot n. `--force` stops what slot n runs. |
-| `claude-crew clear <target> ["<title>"]` | Replace a slot's conversation with a brand new one, under a name nothing else holds. The old conversation is kept. |
+| `claude-crew clear <target> [--yes]` | Clear a slot's context: restart it on a new, empty conversation with the same title, model and effort, then delete the conversation it replaced. Without `--yes` it only prints what would happen. Not Claude Code's `/clear`. |
 | `claude-crew delete <conversation> [--yes]` | Stop it if live, then delete its transcript, its sidecar directory and its uploads. Without `--yes` it only prints what would go. |
 | `claude-crew switch <A> <B>` | Put conversation B in A's slot. Swaps if B is already live somewhere. |
 | `claude-crew prompt <target> <text>` | Type a real prompt into that slot's running claude. |
@@ -144,25 +146,34 @@ inline rather than deferring again.
 Report it as scheduled, not as done. The result is only visible in the next
 session, through `claude-crew status` and the unit's journal.
 
-## Starting over in a slot
+## Clearing a session's context
 
-Prefer `claude-crew clear <target>` over an in-band `/clear`.
+`claude-crew clear` is NOT Claude Code's `/clear`. Say so whenever you offer
+either one.
 
-`/clear` mints a new conversation inside the same process, and that process
-still carries the `-n` name it was launched with, so the new conversation is
-born holding a name another conversation already has. Five duplicates in this
-host's store came from exactly that.
+- **Claude Code's `/clear`** starts a new conversation in the same process and
+  keeps the old one on disk under the same title, so the store gets two
+  conversations with one name. The user does not use it.
+- **`claude-crew clear`** restarts the slot on a new, empty conversation with the
+  same title, model and effort, then DELETES the old conversation, its sidecar
+  and its uploads. There is no backup.
 
-`clear` stops the slot, starts a new conversation there, and names it something
-nothing else holds: `Notes`, then `Notes 2`, then `Notes 3`. Pass a title to
-choose one yourself. The old conversation is kept and stays resumable.
+Clearing requires the user's confirmation, exactly like deleting. Run it bare
+first, show the user what it printed, and add `--yes` only after they say yes.
+Before asking, check its uploads: an upload can be the only copy of a file.
 
 ```
-claude-crew clear 4                      # Notes -> "Notes 2"
-claude-crew clear "notes" "Billing spike" # choose the name
+claude-crew clear 4          # prints the plan, changes nothing
+claude-crew clear 4 --yes    # after the user confirms
 ```
 
-Aimed at your own slot it defers onto a timer, like every other stop path.
+Remote control gets a new link, because it follows the conversation. Aimed at
+your own slot, `clear` defers onto a timer, like every other stop path.
+
+**If a `/clear` happened anyway,** the SessionStart hook `claude-crew cleared`
+has already saved the slot as holding the new conversation and put a notice in
+your context. Tell the user the previous conversation still exists under the
+same name, and ask before deleting it with `claude-crew delete <id> --yes`.
 
 ## Deleting a conversation
 

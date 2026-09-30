@@ -258,7 +258,7 @@ async function act(payload, busyBtn, busyText) {
 }
 
 function openDialog(build) {
-  const d = $("dlg"), b = $("dlgBody"); b.replaceChildren(...build(() => d.close()));
+  const d = $("dlg"), b = $("dlgBody"); b.replaceChildren(...build(() => d.close()).flat().filter(n => n != null));
   d.showModal();
 }
 
@@ -291,7 +291,7 @@ function slotMenu(s) {
       el("button", { type: "button", onclick: () => sendPrompt(s) }, "Send Prompt…"),
       el("button", { type: "button", onclick: () => pickConv(s, close) }, "Replace…", el("span", { class: "sub" }, "with a stopped session")),
       el("button", { type: "button", disabled: !others.length, onclick: () => pickSwap(s, others, close) }, "Swap…", el("span", { class: "sub" }, "with another slot")),
-      el("button", { type: "button", onclick: () => confirmClear(s) }, "Start Fresh…", el("span", { class: "sub" }, "new conversation here")),
+      el("button", { type: "button", onclick: () => confirmClear(s) }, "Clear Context…", el("span", { class: "sub" }, "deletes this conversation")),
       el("button", { type: "button", onclick: () => confirmStop(s, close) }, "Stop…", el("span", { class: "sub" }, "keeps the conversation")),
     ),
     el("div", { class: "foot" }, el("button", { class: "ghost", type: "button", onclick: close }, "Close")),
@@ -351,22 +351,15 @@ function confirmRelaunch(s) {
 }
 
 function confirmClear(s) {
-  openDialog(close => {
-    const input = el("input", { type: "text", id: "clearTitle", name: "session-title", autocomplete: "off", spellcheck: "false", placeholder: "Leave empty to number the current title…" });
-    return [
-      el("h3", {}, `Start Fresh in Slot ${s.slot}?`),
-      el("p", {}, `A new conversation replaces “${name(s.title)}” here. The old one stays under Stopped.`),
-      busyWarning(s, "Starting fresh"),
-      el("form", { style: "display:grid;gap:16px", onsubmit: async (e) => {
-          e.preventDefault();
-          if (await act({ op: "clear", slot: s.slot, title: input.value.trim() }, e.submitter, "Starting…")) close();
-        } },
-        el("div", { class: "field" }, el("label", { for: "clearTitle" }, "New Title"), input),
-        el("div", { class: "foot" },
-          el("button", { class: "ghost", type: "button", onclick: close }, "Cancel"),
-          el("button", { type: "submit" }, "Start Fresh"))),
-    ];
-  });
+  openDialog(close => [
+    el("h3", {}, `Clear “${name(s.title)}”?`),
+    el("p", {}, `The slot restarts on a new, empty conversation with the same name, on ${short(s.model || S.defaults.model)} at ${s.effort || S.defaults.effort} effort. The current conversation and its uploads are deleted. This cannot be undone.`),
+    el("p", {}, "This is not Claude Code’s /clear, which keeps the old conversation and leaves two sessions with one name."),
+    busyWarning(s, "Clearing it"),
+    el("div", { class: "foot" },
+      el("button", { class: "ghost", type: "button", onclick: close }, "Cancel"),
+      el("button", { class: "danger", type: "button", onclick: async (e) => { if (await act({ op: "clear", slot: s.slot }, e.currentTarget, "Clearing…")) close(); } }, "Clear Context")),
+  ]);
 }
 
 function sendPrompt(s) {

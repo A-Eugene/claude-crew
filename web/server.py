@@ -209,14 +209,13 @@ def run_action(a):
         return (*crew("relaunch", s), "Restarted.")
     if op == "switch" and slot and conv:
         return (*crew("switch", s, conv), "Done.")
-    if op in ("new", "clear") and slot:
+    if op == "new" and slot:
         title = (a.get("title") or "").strip()
-        if op == "new" or title:
-            if not TITLE_RE.match(title):
-                return 400, "Title needs 1–80 printable characters.", None
-        if op == "new":
-            return (*crew("new", title, "--slot", s), "Started.")
-        return (*crew("clear", s, *([title] if title else [])), "Started a new conversation.")
+        if not TITLE_RE.match(title):
+            return 400, "Title needs 1–80 printable characters.", None
+        return (*crew("new", title, "--slot", s), "Started.")
+    if op == "clear" and slot:
+        return (*crew("clear", s, "--yes"), "Context cleared. The old conversation is deleted.")
     if op == "prompt" and slot:
         text = (a.get("text") or "").strip()
         if not PROMPT_RE.match(text):

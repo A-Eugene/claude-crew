@@ -31,10 +31,13 @@
 #   boot on|off|status         start the saved slots automatically after a reboot
 #   new "<title>" [--slot <n> [--force]]
 #                              start a brand new conversation in a free slot
-#   clear <target> ["<title>"] replace a slot's conversation with a brand new
-#                              one, under a name nothing else holds. The old
-#                              conversation is kept. This is the alternative to
-#                              an in-band /clear, which reuses the name.
+#   clear <target> [--yes]     clear a slot's context: a new, empty conversation
+#                              under the same title, model and effort, then the
+#                              old conversation is DELETED. Without --yes it only
+#                              prints what would happen. Not Claude Code's /clear.
+#   cleared                    SessionStart hook for Claude Code's own /clear:
+#                              saves the slot's new conversation and has the
+#                              session ask before the old one is deleted
 #   delete <conversation> [--yes]
 #                              stop it if live, then delete its transcript for good
 #   switch <A> <B>             put conversation B in A's slot; swap if B is live
@@ -1236,46 +1239,25 @@ cmd_new() {
   fi
 }
 
-# The first name in a family that no conversation holds: "Base", then "Base 2",
-# "Base 3", and so on. A base that already ends in a number is stripped back
-# first, so clearing twice gives "Base 3" rather than "Base 2 2".
-next_free_title() {     # $1 = base title
-  local base="$1" cand n=2 clash x
-  [[ "$base" =~ ^(.*)\ ([0-9]+)$ ]] && base="${BASH_REMATCH[1]}"
-  local -a taken=()
-  local tid ttl
-  while IFS=$'\t' read -r tid ttl; do taken+=("$ttl"); done < <(list_convs 60)
-  cand="$base"
-  while :; do
-    clash=0
-    for x in ${taken[@]+"${taken[@]}"}; do [ "$x" = "$cand" ] && { clash=1; break; }; done
-    [ "$clash" = 0 ] && { printf '%s\n' "$cand"; return 0; }
-    cand="$base $n"; n=$((n + 1))
-  done
-}
-
-# Replace a slot's conversation with a brand new one, under a name nothing else
-# holds. This is the alternative to an in-band /clear.
+# Clear a slot's context. The slot restarts on a new, empty conversation with the
+# same title, model and effort, and the conversation it held is deleted, with its
+# sidecar and uploads. There is no backup, so a bare run only prints the plan.
 #
-# /clear mints a new conversation inside the SAME process, and that process
-# carries the `-n` name it was launched with, so the new conversation is born
-# with a name another conversation already has. Five of the duplicates in this
-# store came from exactly that. Relaunching instead means the new conversation
-# is named once, deliberately, and the window and saved slot agree with it.
-#
-# The old conversation is kept. Clearing is not deleting, and `claude-crew
-# delete` is the command that throws context away.
+# This is not Claude Code's /clear. That one starts a new conversation inside the
+# same process and keeps the old one on disk. The process carries the `-n` name
+# it was launched with, so the new conversation gets the same title, and the
+# store ends up with two conversations under one name. `cleared` below handles
+# a /clear that happens anyway.
 cmd_clear() {
-  local usage='clear: usage: claude-crew clear <target> ["<new title>"]'
-  local target="" title=""
+  local usage='clear: usage: claude-crew clear <target> [--yes]'
+  local target="" yes=0
   while [ $# -gt 0 ]; do
     case "$1" in
+      --yes) yes=1; shift ;;
       -*) die "clear: unknown flag $1" ;;
       *)
-        if [ -z "$target" ]; then target="$1"
-        elif [ -z "$title" ]; then title="$1"
-        else die "$usage"; fi
-        shift ;;
+        [ -z "$target" ] || die "$usage"
+        target="$1"; shift ;;
     esac
   done
   [ -n "$target" ] || die "$usage"
@@ -1283,15 +1265,122 @@ cmd_clear() {
   scan_slots
   detect_self
   local n; n=$(resolve_slot "$target")
+  local old="${CONV_OF_SLOT[$n]:-}" title pd
+  [ -n "$old" ] || die "clear: $(sess_name "$n") holds no conversation to clear"
+  title=$(conv_title "$old"); title=${title:-$(title_of_slot "$n")}
+  pd=$(projdir)
+
+  printf 'slot          %s\n' "$(sess_name "$n")"
+  printf 'title         %s  (kept)\n' "${title:-untitled}"
+  printf 'conversation  %s  (will be deleted, with its sidecar and uploads)\n' "$old"
+  [ -f "$pd/$old.jsonl" ] && printf 'transcript    %s bytes\n' "$(stat -c %s "$pd/$old.jsonl")"
+  [ -d "$HOME/.claude/uploads/$old" ] &&
+    printf 'uploads       %s bytes in %s/\n' "$(du -sb "$HOME/.claude/uploads/$old" | cut -f1)" "$HOME/.claude/uploads/$old"
+  echo "The slot restarts on a new, empty conversation with the same title, model and effort."
+  echo "This is not Claude Code's /clear, which keeps the old conversation under the same name."
+  if [ "$yes" != 1 ]; then
+    echo "nothing done. Run again with --yes to clear it. There is no backup."
+    return 0
+  fi
   # Aimed at your own slot this defers onto a timer, because stopping your own
   # claude kills the shell that would have started the replacement.
   refuse_self "$n" "clear"
 
-  local old; old=$(title_of_slot "$n")
-  [ -n "$title" ] || title=$(next_free_title "${old:-$(sess_name "$n")}")
-  printf '%s: %s -> new conversation "%s"\n' "$(sess_name "$n")" "${old:-empty}" "$title"
-  echo "  the old conversation is kept, and stays resumable"
-  cmd_new "$title" --slot "$n" --force
+  local m e sm="" se=""
+  IFS=$'\t' read -r m e < <(kept_flags "$n" "$old")
+  state_read
+  if [ "${ST_ID[$n]:-}" = "$old" ]; then sm="${ST_MODEL[$n]}"; se="${ST_EFFORT[$n]}"; fi
+
+  local oldpid="${PID_OF_SLOT[$n]:-}"
+  stop_claude_in "$n"
+  if [ -n "$oldpid" ] && kill -0 "$oldpid" 2>/dev/null; then
+    die "clear: pid $oldpid in $(sess_name "$n") did not exit. Nothing was deleted."
+  fi
+  start_claude_in "$n" "" "$title" "$m" "$e"
+
+  # Delete only once the new conversation has an id. Until then the saved slot
+  # would still name the old one, and start would try to resume a deleted file.
+  local i pid="" id=""
+  for ((i = 0; i < 60; i++)); do
+    sleep 0.5
+    pid=$(claude_pid_in "$n")
+    [ -n "$pid" ] && id=$(conv_of_pid "$pid")
+    [ -n "$id" ] && [ "$id" != "$old" ] && break
+    id=""
+  done
+  if [ -z "$id" ]; then
+    echo "ERROR: $(sess_name "$n") has no new conversation id after 30s. The old conversation $old was kept." >&2
+    exit 4
+  fi
+  printf 'verify: %s runs new conversation %s (pid %s)\n' "$(sess_name "$n")" "$id" "$pid"
+
+  save_state
+  # save_state treats a new conversation on the default model as following the
+  # default. Carry over what the old slot entry said instead.
+  state_read
+  if [ -n "$sm" ]; then ST_MODEL[$n]="$sm"; fi
+  if [ -n "$se" ]; then ST_EFFORT[$n]="$se"; fi
+  state_write
+
+  if [ -f "$pd/$old.jsonl" ]; then
+    cmd_delete "$old" --yes
+  else
+    echo "$old never wrote a transcript, so there is nothing to delete"
+  fi
+}
+
+# SessionStart hook, matcher "clear". Registered in ~/.claude/settings.json.
+# CREW_WEB_URL, when set, names the web page in the notice.
+#
+# Claude Code's /clear starts a new conversation in the same process and keeps
+# the old one under the same title. This records the new conversation as the
+# slot's, and prints a notice into the new session's context so that it asks the
+# user before the old conversation is deleted. It deletes nothing itself.
+cmd_cleared() {
+  local new
+  new=$(python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("session_id","") or "")
+except Exception: print("")' 2>/dev/null) || new=""
+  [[ "$new" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || return 0
+  scan_slots
+  # The slot whose claude is an ancestor of this hook. A /clear in a claude that
+  # no slot runs is not the crew's business.
+  local p=$$ n slot="" guard=0
+  while [ "$p" -gt 1 ] && [ "$guard" -lt 40 ] && [ -z "$slot" ]; do
+    for ((n = 1; n <= SLOTS; n++)); do
+      if [ "${PID_OF_SLOT[$n]:-}" = "$p" ]; then slot=$n; fi
+    done
+    p=$(ppid_of "$p") || break
+    guard=$((guard + 1))
+  done
+  [ -n "$slot" ] || return 0
+  state_read
+  local old="${ST_ID[$slot]:-}"
+  [ -n "$old" ] && [ "$old" != "$new" ] || return 0
+  [ -f "$(projdir)/$old.jsonl" ] || return 0
+  local other="${SLOT_OF_CONV[$old]:-}"
+  ST_ID[$slot]="$new"
+  state_write
+  if [ -n "$other" ] && [ "$other" != "$slot" ]; then return 0; fi
+  local title="${ST_TITLE[$slot]:-}"
+  cat <<NOTICE
+claude-crew: the user just ran Claude Code's built-in /clear in $(sess_name "$slot").
+It started this new conversation ($new) but did NOT delete the previous one.
+The previous conversation $old ("${title:-untitled}") is still on disk under the same title,
+so the crew now has two conversations with one name.
+The slot is now saved as running this new conversation.
+
+In your first reply, before anything else, tell the user this in two or three sentences
+and ask whether to delete the previous conversation. Delete it only after they say yes:
+  $CREW_DIR/bin/claude-crew delete $old --yes
+NOTICE
+  if [ -n "${CREW_WEB_URL:-}" ]; then
+    echo "They can also delete it from the Stopped list at $CREW_WEB_URL."
+  fi
+  cat <<NOTICE
+Tell them that next time "claude-crew clear" (Clear Context on the crew web page) clears
+a session in one step: it asks first and leaves no duplicate.
+NOTICE
 }
 
 # Every live claude pid whose session registry names conversation $1, inside the
@@ -1483,10 +1572,15 @@ cmd_switch() {
 # paste being collapsed to a placeholder.
 input_box() {
   local tmp; tmp=$(mktemp)
-  tmux capture-pane -p -t "$1" > "$tmp" 2>/dev/null || true
+  tmux capture-pane -p -e -t "$1" > "$tmp" 2>/dev/null || true
   python3 - "$tmp" <<'PY'
 import sys, re
-lines = [l.rstrip("\n") for l in open(sys.argv[1], encoding="utf-8", errors="replace")]
+# The box shows a suggested prompt as dim text (ESC[2m). It is not a draft, so
+# drop dim runs, then the remaining escape codes.
+dim = re.compile(r"\x1b\[2m.*?(?:\x1b\[(?:0|22)m|$)")
+ansi = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+lines = [ansi.sub("", dim.sub("", l.rstrip("\n"))).replace("\xa0", " ")
+         for l in open(sys.argv[1], encoding="utf-8", errors="replace")]
 rules = [i for i, l in enumerate(lines) if re.match(r"^\s*[─—]{6,}", l)]
 if len(rules) < 2:
     print("<<no-input-box>>"); raise SystemExit
@@ -1538,7 +1632,6 @@ cmd_prompt() {
   esac
 
   tmux send-keys -t "$s" -l -- "$text"
-  sleep 0.5
 
   # Confirm by asking whether the box went from empty to non-empty, NOT by
   # looking for the text.
@@ -1554,7 +1647,14 @@ cmd_prompt() {
   # characters survived it untouched, verified 2026-09-03. C-c does clear it,
   # and also interrupts whatever turn the session has started since, so it is
   # not a cleanup tool either.
-  local after; after=$(input_box "$s")
+  # The redraw can lag the keystrokes, and until it lands the box still shows
+  # the dim suggestion, which reads as empty. Give it up to 3 s.
+  local after="" i
+  for ((i = 0; i < 6; i++)); do
+    sleep 0.5
+    after=$(input_box "$s")
+    [ -n "$after" ] && [ "$after" != "<<no-input-box>>" ] && break
+  done
   if [ -z "$after" ] || [ "$after" = "<<no-input-box>>" ]; then
     die "$(sess_name "$n") did not accept the text. Nothing was submitted."
   fi
@@ -1743,6 +1843,7 @@ case "$cmd" in
   model)   load_conf; cmd_model "$@" ;;
   effort)  load_conf; cmd_effort "$@" ;;
   relaunch) load_conf; cmd_relaunch "$@" ;;
+  cleared) load_conf; cmd_cleared "$@" ;;
   update)  load_conf; cmd_update "$@" ;;
   -h|--help|help) sed -n '2,/^set -euo/p' "$0" | sed 's/^# \{0,1\}//;$d' ;;
   *) die "unknown command '$cmd' (try: claude-crew --help)" ;;
