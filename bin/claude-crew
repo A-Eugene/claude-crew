@@ -614,7 +614,7 @@ conv_flags() {          # $1=conversation id
 import json, os, sys
 p = sys.argv[1]; size = os.path.getsize(p)
 with open(p, "rb") as fh:
-    fh.seek(max(0, size - (4 << 20)))
+    fh.seek(max(0, size - (1 << 20)))
     lines = fh.read().split(b"\n")
 for line in reversed(lines):
     if b'"assistant"' not in line: continue
@@ -635,7 +635,13 @@ conv_title() {          # $1=conversation id
   [ -n "$1" ] && [ -f "$f" ] || return 0
   python3 - "$f" <<'PY2'
 import json, re, sys
-hits = re.findall(rb'"customTitle"\s*:\s*"((?:[^"\\]|\\.)*)"', open(sys.argv[1], "rb").read())
+import os
+p = sys.argv[1]; size = os.path.getsize(p); hits = []
+for window in (1 << 20, size):          # the tail first; titles are re-appended often
+    with open(p, "rb") as fh:
+        fh.seek(max(0, size - window))
+        hits = re.findall(rb'"customTitle"\s*:\s*"((?:[^"\\]|\\.)*)"', fh.read())
+    if hits or window >= size: break
 if hits:
     try: t = json.loads('"%s"' % hits[-1].decode("utf-8", "replace"))
     except Exception: t = hits[-1].decode("utf-8", "replace")
@@ -794,6 +800,57 @@ cmd_setup() {
   sed 's/^/  /' "$CONF" | grep -v '^  #'
   echo "  transcripts: $pd"
   [ -d "$pd" ] || echo "  WARNING: that transcript directory does not exist yet" >&2
+}
+
+# Machine-readable status for the crew web page. One JSON object on stdout.
+cmd_status_json() {
+  scan_slots
+  state_read
+  local n id pid title m e state scr url tsv="" row rid rtitle
+  for ((n = 1; n <= SLOTS; n++)); do
+    id=${CONV_OF_SLOT[$n]:-}; pid=${PID_OF_SLOT[$n]:-}
+    title=""; [ -n "$id" ] && { title=$(conv_title "$id"); title=${title:-$(title_of_slot "$n")}; }
+    m=""; e=""; state=free; url=""
+    if [ -n "$pid" ]; then
+      IFS=$'\t' read -r m e < <(kept_flags "$n" "$id" 1)
+      # Claude Code keeps live state per process in ~/.claude/sessions/<pid>.json:
+      # "status" busy|idle and "bridgeSessionId", the remote-control session.
+      local sf="$HOME/.claude/sessions/$pid.json" busy="" bridge=""
+      if [ -f "$sf" ]; then
+        IFS=$'\t' read -r busy bridge < <(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print("%s\t%s"%(d.get("status",""),d.get("bridgeSessionId","")))' "$sf" 2>/dev/null)
+      fi
+      [ -n "$bridge" ] && url="https://claude.ai/code/$bridge"
+      # Dialogs and the input box sit at the bottom; conversation text above
+      # them can quote the same words.
+      scr=$(tmux capture-pane -p -J -t "$(sess_name "$n")" 2>/dev/null | grep -v '^\s*$' | tail -8 || true)
+      if grep -qE 'Enter to (confirm|select|continue)|Esc to cancel' <<<"$scr"; then state=dialog
+      elif [ "$busy" = busy ] || grep -q 'esc to interrupt' <<<"$scr"; then state=working
+      elif grep -qE '^❯ .*[^ ]' <<<"$scr"; then state=draft
+      else state=idle; fi
+    fi
+    tsv+="$n"$'\t'"$id"$'\t'"$title"$'\t'"$state"$'\t'"$m"$'\t'"$e"$'\t'"${ST_MODEL[$n]:-}"$'\t'"${ST_EFFORT[$n]:-}"$'\t'"$url"$'\n'
+  done
+  local convs=""
+  while IFS=$'\t' read -r rid rtitle; do
+    [ -n "$rid" ] && [ -z "${SLOT_OF_CONV[$rid]:-}" ] && convs+="$rid"$'\t'"$rtitle"$'\n'
+  done < <(list_convs 25)
+  SLOTS_TSV="$tsv" CONVS_TSV="$convs" python3 - "$MODEL" "$EFFORT" "$SLOTS" "$REMOTE_CONTROL" "$AUTOCOMPACT" <<'PY2'
+import json, os, sys
+model, effort, slots, rc, ac = sys.argv[1:6]
+out = {"defaults": {"model": model, "effort": effort, "slots": int(slots),
+                    "remote_control": rc, "autocompact": ac},
+       "slots": [], "conversations": []}
+for line in os.environ["SLOTS_TSV"].splitlines():
+    n, cid, title, state, m, e, sm, se, url = (line.split("\t") + [""] * 9)[:9]
+    out["slots"].append({"slot": int(n), "id": cid or None, "title": title or None,
+        "state": state, "model": m or None, "effort": e or None,
+        "follows_default_model": sm == "-", "follows_default_effort": se == "-",
+        "remote_url": url or None})
+for line in os.environ["CONVS_TSV"].splitlines():
+    cid, title = (line.split("\t") + [""])[:2]
+    out["conversations"].append({"id": cid, "title": title or None})
+print(json.dumps(out))
+PY2
 }
 
 cmd_status() {
@@ -1629,7 +1686,7 @@ set -- ${ARGS[@]+"${ARGS[@]}"}
 cmd="${1:-status}"; shift || true
 case "$cmd" in
   setup)   cmd_setup "$@" ;;
-  status)  load_conf; cmd_status "$@"; status_saved ;;
+  status)  load_conf; if [ "${1:-}" = "--json" ]; then cmd_status_json; else cmd_status "$@"; status_saved; fi ;;
   whoami)  load_conf; cmd_whoami "$@" ;;
   relabel) load_conf; cmd_relabel "$@" ;;
   start)   load_conf; cmd_start "$@" ;;
