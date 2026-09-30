@@ -229,6 +229,14 @@ would be executed as a command. That is refused too.
 Newlines submit the box, so a multi-line prompt would arrive as several separate
 turns. They are collapsed to spaces and the command says so.
 
+## Renaming a session
+
+Rename from inside the session with `/rename`. The conversation's own title is
+the source of truth: every relaunch (start, restart, switch, model, effort)
+reads the latest title from the transcript and launches under it, so the window
+label and the remote-control name follow the rename on the next relaunch. Until
+then `status` shows the stale window label beside the real title.
+
 ## Changing model or effort
 
 Both are launch flags, so changing one is the same primitive as `switch`: stop
