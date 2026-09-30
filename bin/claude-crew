@@ -495,6 +495,23 @@ launch_flags_of_pid() {
   printf '%s\t%s\n' "$m" "$e"
 }
 
+# The model and effort a conversation keeps when it is relaunched, as
+# "model<TAB>effort": the flags it runs with now, else its saved entry. A field
+# left empty falls back to the crew.conf default in start_claude_in.
+kept_flags() {          # $1=slot it runs in, or empty  $2=conversation id
+  local pid="" m="" e="" n
+  [ -n "$1" ] && pid="${PID_OF_SLOT[$1]:-}"
+  [ -n "$pid" ] && IFS=$'\t' read -r m e < <(launch_flags_of_pid "$pid")
+  if [ -n "$2" ] && { [ -z "$m" ] || [ -z "$e" ]; }; then
+    state_read
+    for n in "${!ST_ID[@]}"; do
+      [ "${ST_ID[$n]}" = "$2" ] || continue
+      m="${m:-${ST_MODEL[$n]}}"; e="${e:-${ST_EFFORT[$n]}}"
+    done
+  fi
+  printf '%s\t%s\n' "$m" "$e"
+}
+
 # Merge what is running now into the saved slots and write them.
 save_state() {
   state_read
@@ -1269,16 +1286,20 @@ cmd_switch() {
 
   [ "$id_a" = "$id_b" ] && { echo "already: ${title_b:-${id_b:0:8}} is in $(sess_name "$slot_a")"; return 0; }
 
+  # Model and effort travel with the conversation, not with the slot.
+  local ma ea mb eb
+  IFS=$'\t' read -r ma ea < <(kept_flags "$slot_a" "$id_a")
+  IFS=$'\t' read -r mb eb < <(kept_flags "$slot_b" "$id_b")
   if [ -n "$slot_b" ]; then
     echo "swapping $(sess_name "$slot_a") <-> $(sess_name "$slot_b")"
     stop_claude_in "$slot_a"; stop_claude_in "$slot_b"
-    start_claude_in "$slot_a" "$id_b" "$title_b"
-    [ -n "$id_a" ] && start_claude_in "$slot_b" "$id_a" "$title_a"
+    start_claude_in "$slot_a" "$id_b" "$title_b" "$mb" "$eb"
+    [ -n "$id_a" ] && start_claude_in "$slot_b" "$id_a" "$title_a" "$ma" "$ea"
   else
     echo "$(sess_name "$slot_a"): ${title_a:-${id_a:0:8}} -> ${title_b:-${id_b:0:8}}"
     [ -n "$id_a" ] && echo "  evicting ${title_a:-${id_a:0:8}} (returns on the next claude-crew start)"
     stop_claude_in "$slot_a"
-    start_claude_in "$slot_a" "$id_b" "$title_b"
+    start_claude_in "$slot_a" "$id_b" "$title_b" "$mb" "$eb"
   fi
 
   sleep 5
@@ -1393,11 +1414,13 @@ relaunch_with() {       # $1=target $2=model-or-empty $3=effort-or-empty
   refuse_self "$n" "changing model or effort"
   local id="${CONV_OF_SLOT[$n]:-}" title; title=$(title_of_slot "$n")
   [ -n "$id" ] || die "$(sess_name "$n") holds no resumable conversation"
+  local keep_m keep_e; IFS=$'\t' read -r keep_m keep_e < <(kept_flags "$n" "$id")
+  local m="${2:-$keep_m}" e="${3:-$keep_e}"
   stop_claude_in "$n"
-  start_claude_in "$n" "$id" "$title" "$2" "$3"
+  start_claude_in "$n" "$id" "$title" "$m" "$e"
   sleep 5
   if conv_is_live "$id"; then
-    echo "verify: $(sess_name "$n") ($title) live on ${2:-$MODEL}/${3:-$EFFORT}"
+    echo "verify: $(sess_name "$n") ($title) live on ${m:-$MODEL}/${e:-$EFFORT}"
     save_state
   else
     echo "ERROR: $(sess_name "$n") did not come back up" >&2
