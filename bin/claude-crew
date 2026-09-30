@@ -498,11 +498,14 @@ launch_flags_of_pid() {
 # The model and effort a conversation keeps when it is relaunched, as
 # "model<TAB>effort": the flags it runs with now, else its saved entry. A field
 # left empty falls back to the crew.conf default in start_claude_in.
-kept_flags() {          # $1=slot it runs in, or empty  $2=conversation id
-  local pid="" m="" e="" n
+kept_flags() {          # $1=slot it runs in, or empty  $2=conversation id  [$3=1: skip the saved entry]
+  local pid="" m="" e="" n lm le
+  [ -n "$2" ] && IFS=$'\t' read -r m e < <(conv_flags "$2")
   [ -n "$1" ] && pid="${PID_OF_SLOT[$1]:-}"
-  [ -n "$pid" ] && IFS=$'\t' read -r m e < <(launch_flags_of_pid "$pid")
-  if [ -n "$2" ] && { [ -z "$m" ] || [ -z "$e" ]; }; then
+  if [ -n "$pid" ] && { [ -z "$m" ] || [ -z "$e" ]; }; then
+    IFS=$'\t' read -r lm le < <(launch_flags_of_pid "$pid"); m="${m:-$lm}"; e="${e:-$le}"
+  fi
+  if [ -z "${3:-}" ] && [ -n "$2" ] && { [ -z "$m" ] || [ -z "$e" ]; }; then
     state_read
     for n in "${!ST_ID[@]}"; do
       [ "${ST_ID[$n]}" = "$2" ] || continue
@@ -523,7 +526,7 @@ save_state() {
     id=${CONV_OF_SLOT[$n]:-}
     [ -n "$id" ] || continue
     pid=${PID_OF_SLOT[$n]}
-    IFS=$'\t' read -r model effort <<<"$(launch_flags_of_pid "$pid")"
+    IFS=$'\t' read -r model effort <<<"$(kept_flags "$n" "$id" 1)"
     model="${model:-$MODEL}" effort="${effort:-$EFFORT}"
     # A slot on the default stays "-" (follow crew.conf) unless someone set it:
     # a new conversation, or one already following, that still runs the default.
@@ -599,6 +602,30 @@ claude_cmd() {          # $1=conv id (may be empty)  $2=title (may be empty)  $3
   fi
   [ -n "$id" ] && a+=(--resume "$id")
   printf '%q ' "${a[@]}"
+}
+
+# The model and effort the conversation actually runs on, as "model<TAB>effort":
+# those of its latest real reply. /model and /effort inside the session change
+# these and never the launch flags. Empty fields when it has not replied yet.
+conv_flags() {          # $1=conversation id
+  local f; f="$(projdir)/$1.jsonl"
+  [ -n "$1" ] && [ -f "$f" ] || { printf '\t\n'; return 0; }
+  python3 - "$f" <<'PY2'
+import json, os, sys
+p = sys.argv[1]; size = os.path.getsize(p)
+with open(p, "rb") as fh:
+    fh.seek(max(0, size - (4 << 20)))
+    lines = fh.read().split(b"\n")
+for line in reversed(lines):
+    if b'"assistant"' not in line: continue
+    try: d = json.loads(line)
+    except Exception: continue
+    m = (d.get("message") or {}).get("model") or ""
+    if d.get("type") != "assistant" or not m or m.startswith("<"): continue
+    print("%s\t%s" % (m, d.get("effort") or "")); break
+else:
+    print("\t")
+PY2
 }
 
 # The conversation's own title: the last customTitle in its transcript, which is
