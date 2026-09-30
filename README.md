@@ -32,7 +32,7 @@ says, and any conversation two sessions hold at once.
 ## The idea
 
 **Each running conversation gets its own tmux session, named after it:**
-`Claude_<conversation id>`. Starting a conversation creates its session, and
+`Claude_<short id>`, the first 8 characters of the conversation id, such as `Claude_2b599c1a`. Starting a conversation creates its session, and
 stopping it removes the session. There is no fixed number of sessions and
 nothing sits empty. The window name is the conversation's title, so `tmux ls`
 stays readable, and every command accepts a title as the target.
@@ -298,7 +298,7 @@ outside the repository. Setting a new password signs every browser out.
 | `PERMISSION_MODE` | `auto` | |
 | `REMOTE_CONTROL` | `on` | Named after the conversation title. |
 | `AUTOCOMPACT` | `auto` | Passed as `--autocompact`: `auto`, or a window from 100k to 1M tokens. |
-| `TMUX_PREFIX` | `Claude` | Sessions are named `Claude_<conversation id>`. Letters and digits only. |
+| `TMUX_PREFIX` | `Claude` | Sessions are named `Claude_<short id>`. Letters and digits only. |
 | `SHELL_CMD` | `bash` | The pane process. |
 | `CLAUDE_BIN` | `claude` | A testing seam. Point it at a stub to exercise the tmux mechanics without resuming a real conversation. |
 

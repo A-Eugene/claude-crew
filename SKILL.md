@@ -2,7 +2,7 @@
 name: claude-crew
 description: >-
   Manage the Claude Code sessions on this host, each a tmux session named
-  Claude_<conversation id>: start a new one, resume a stopped conversation,
+  Claude_<first 8 characters of its conversation id>: start a new one, resume a stopped conversation,
   stop, restart, clear a session's context (which deletes the conversation it
   replaces, unlike Claude Code's /clear), delete a conversation for good,
   change a session's model or effort, or type keystrokes into a session's input
@@ -38,7 +38,7 @@ Run it as `claude-crew <command>`, or `crew` for short. Both are on `PATH` via
 
 ## The model
 
-- Each running conversation has its own tmux session, `Claude_<conversation id>`.
+- Each running conversation has its own tmux session, `Claude_<short id>`, the first 8 characters of its conversation id, like `Claude_2b599c1a`.
   Starting a conversation creates it, and stopping the conversation removes it.
   There is no fixed number of sessions.
 - The window name is the conversation's title. Address sessions by title or id,
@@ -327,7 +327,7 @@ safe to edit by hand.
 | `PERMISSION_MODE` | `auto` | |
 | `REMOTE_CONTROL` | `on` | Named after the conversation title. |
 | `AUTOCOMPACT` | `auto` | Passed as `--autocompact`: `auto`, or a window from 100k to 1M tokens. |
-| `TMUX_PREFIX` | `Claude` | Sessions are named `Claude_<conversation id>`. Letters and digits only. |
+| `TMUX_PREFIX` | `Claude` | Sessions are named `Claude_<short id>`. Letters and digits only. |
 | `SHELL_CMD` | `bash` | The pane process. |
 | `CLAUDE_BIN` | `claude` | A testing seam. Point it at a stub to exercise the tmux mechanics without resuming a real conversation. |
 

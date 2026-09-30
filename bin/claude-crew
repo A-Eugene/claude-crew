@@ -3,8 +3,8 @@
 # conversation, and start, stop, restart and clear them without losing track.
 #
 # The model:
-#   session  a tmux session named "<TMUX_PREFIX>_<conversation id>", created when
-#            a conversation starts and removed when it stops. It runs a SHELL,
+#   session  a tmux session named "<TMUX_PREFIX>_<first 8 of the conversation id>",
+#            created when a conversation starts and removed when it stops. It runs a SHELL,
 #            and claude is a command typed into that shell, so restarting claude
 #            in place keeps the pane, its scrollback and its window name.
 #   conv     a conversation: a transcript id and a descriptive title. The window
@@ -136,7 +136,8 @@ load_conf() {
 # replacing every "/" and "." with "-": /root -> -root.
 projdir() { printf '%s/.claude/projects/%s\n' "$HOME" "$(printf '%s' "$WORKDIR" | sed 's#[/.]#-#g')"; }
 
-sess_of_conv() { printf '%s_%s\n' "$TMUX_PREFIX" "$1"; }
+# The first 8 characters of the conversation id, which Claude Code also shows.
+sess_of_conv() { printf '%s_%s\n' "$TMUX_PREFIX" "${1:0:8}"; }
 
 new_uuid() { python3 -c 'import uuid; print(uuid.uuid4())'; }
 
@@ -333,11 +334,12 @@ claude_pid_in() {
   done
 }
 
-# Crew sessions: "<prefix>_<uuid>", and the numbered "<prefix><n>" of older
-# versions until `migrate` renames them.
+# Crew sessions: "<prefix>_<first 8 of the conversation id>". The numbered
+# "<prefix><n>" and full-id names of older versions are listed too, until
+# `migrate` or `relabel` renames them.
 list_sessions() {
   tmux list-sessions -F '#{session_name}' 2>/dev/null |
-    grep -E "^${TMUX_PREFIX}(_[0-9a-f-]{36}|[0-9]+)\$" || true
+    grep -E "^${TMUX_PREFIX}(_[0-9a-f]{8}|_[0-9a-f-]{36}|[0-9]+)\$" || true
 }
 
 declare -a DUPES=()      # "id sessA sessB" for a conversation held by two sessions
@@ -733,6 +735,12 @@ start_claude_in() {
   # launching under the window name would undo the rename.
   local own; own=$(conv_title "$id")
   [ -n "$own" ] && title="$own"
+  # Two conversations can share their first 8 characters. Never type a launch
+  # command into a session whose claude runs a different conversation.
+  local held; held=$(claude_pid_in "$s")
+  if [ -n "$held" ] && [ "$(conv_of_pid "$held")" != "$id" ]; then
+    die "$s already runs conversation $(conv_of_pid "$held"), not $id. Nothing was started."
+  fi
   ensure_pane "$s"
   tmux rename-window -t "$s" "${title:-${id:0:8}}" 2>/dev/null || true
   cmd=$(claude_cmd "$id" "$title" "${4:-}" "${5:-}" "${6:-}")
@@ -1345,12 +1353,18 @@ except Exception: print("")' 2>/dev/null) || new=""
   scan_sessions
   local s; s=$(caller_sess)
   [ -n "$s" ] || return 0                 # a claude outside the crew
-  local old=""
-  [[ "$s" =~ ^${TMUX_PREFIX}_(.+)$ ]] && old="${BASH_REMATCH[1]}"
+  # The session name holds the start of the previous conversation's id. The
+  # saved set holds the whole id.
+  local short="" old="" id
+  [[ "$s" =~ ^${TMUX_PREFIX}_([0-9a-f-]+)$ ]] && short="${BASH_REMATCH[1]}"
+  [ -n "$short" ] || return 0
+  state_read
+  for id in ${ST_ORDER[@]+"${ST_ORDER[@]}"}; do
+    [[ "$id" == "$short"* ]] && [ -n "${ST_MODEL[$id]+x}" ] && old="$id"
+  done
   [[ "$old" =~ $UUID_RE ]] && [ "$old" != "$new" ] || return 0
   local want; want=$(sess_of_conv "$new")
   tmux has-session -t "=$want" 2>/dev/null || tmux rename-session -t "=$s" "$want"
-  state_read
   local title="${ST_TITLE[$old]:-$(title_of_sess "$want")}"
   if [ -n "${ST_MODEL[$old]+x}" ]; then
     state_put "$new" "${ST_MODEL[$old]}" "${ST_EFFORT[$old]}" "$title"

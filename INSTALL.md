@@ -123,7 +123,7 @@ Every start and stop updates the saved set, so `start` and `restart` bring back
 what was running.
 
 Check: `claude-crew status` lists each started conversation. Attach to one with
-`tmux attach -t Claude_<conversation id>` (`tmux ls` shows the names), and leave
+`tmux attach -t Claude_<short id>` (`tmux ls` shows the names), and leave
 with `Ctrl-b d`.
 
 A host that ran an earlier version with numbered `Claude1`, `Claude2` …
