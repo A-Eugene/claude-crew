@@ -68,9 +68,13 @@ when a bare `claude-crew` fails: `/root/.claude/skills/claude-crew/bin/claude-cr
 | `claude-crew delete <conversation> [--yes]` | Stop it if live, then delete its transcript, its sidecar directory and its uploads. Without `--yes` it only prints what would go. |
 | `claude-crew switch <A> <B>` | Put conversation B in A's slot. Swaps if B is already live somewhere. |
 | `claude-crew prompt <target> <text>` | Type a real prompt into that slot's running claude. |
+| `claude-crew relaunch <target>` | Stop and resume one slot on the conversation, model and effort it runs now. |
 | `claude-crew model <target> <model>` | Relaunch that conversation on a different model. |
 | `claude-crew effort <target> <level>` | Relaunch it at a different effort level. |
 | `claude-crew update` | Upgrade the claude binary, then restart. |
+
+The same commands are buttons on the web page in `web/`, served on this host at
+`https://crew.aeugene.top`. The README has its install.
 
 `<target>` is a slot number, a tmux session name, or a loose match on a title.
 Matching lowercases, ignores a leading `[tag]`, and treats punctuation as

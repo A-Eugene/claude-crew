@@ -1,0 +1,565 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#161616" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<title>Claude Crew</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff; --layer: #f4f4f4; --layer-hover: #e8e8e8; --line: #e0e0e0; --line-strong: #8d8d8d;
+  --text: #161616; --text-2: #525252; --text-3: #6f6f6f; --focus: #161616;
+  --btn: #161616; --btn-text: #ffffff; --btn-hover: #393939;
+  --danger: #da1e28; --danger-hover: #b81921;
+  --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161616; --layer: #262626; --layer-hover: #333333; --line: #393939; --line-strong: #6f6f6f;
+    --text: #f4f4f4; --text-2: #c6c6c6; --text-3: #8d8d8d; --focus: #ffffff;
+    --btn: #f4f4f4; --btn-text: #161616; --btn-hover: #c6c6c6;
+    --danger: #da1e28; --danger-hover: #b81921;
+  }
+}
+* { box-sizing: border-box; }
+html { background: var(--bg); -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--text); font: 400 15px/1.45 var(--sans);
+  -webkit-tap-highlight-color: transparent; touch-action: manipulation;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+.skip { position: absolute; left: -9999px; }
+.skip:focus-visible { left: 16px; top: 16px; background: var(--btn); color: var(--btn-text); padding: 8px 12px; z-index: 10; }
+main { max-width: 720px; margin: 0 auto; padding: 24px 16px 64px; }
+header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; margin-bottom: 32px; }
+header h1 { white-space: nowrap; }
+.hdr-tools { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+h1 { font-size: 20px; font-weight: 600; margin: 0; letter-spacing: 0; }
+h2 { font-size: 13px; font-weight: 500; color: var(--text-3); text-transform: uppercase; letter-spacing: .08em; margin: 40px 0 8px; scroll-margin-top: 16px; }
+.muted { color: var(--text-3); font-size: 13px; font-variant-numeric: tabular-nums; }
+.mono { font-family: var(--mono); font-size: 13px; }
+ul { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
+li.row { display: flex; align-items: center; gap: 12px; min-height: 64px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.slotno { width: 20px; flex: none; color: var(--text-3); font-family: var(--mono); font-size: 13px; font-variant-numeric: tabular-nums; }
+.body { flex: 1; min-width: 0; }
+.title { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.meta { color: var(--text-2); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.meta .dim { color: var(--text-3); }
+.state { display: inline-flex; align-items: center; gap: 6px; }
+.dot { width: 8px; height: 8px; border: 1px solid var(--text-2); flex: none; }
+.state.working .dot { background: var(--text); border-color: var(--text); animation: pulse 1.4s ease-in-out infinite; }
+.state.needs { color: var(--text); font-weight: 600; }
+.state.needs .dot { background: var(--text); border-color: var(--text); }
+.state.free .dot { border-style: dashed; border-color: var(--text-3); }
+@keyframes pulse { 50% { opacity: .25; } }
+@media (prefers-reduced-motion: reduce) { .state.working .dot { animation: none; } }
+.actions { display: flex; gap: 8px; flex: none; }
+button, .btn {
+  font: 500 14px/1 var(--sans); min-height: 40px; padding: 0 14px; border-radius: 0; cursor: pointer;
+  border: 1px solid transparent; background: var(--btn); color: var(--btn-text); text-decoration: none;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  transition: background-color .12s ease, border-color .12s ease, color .12s ease;
+}
+button:hover, .btn:hover { background: var(--btn-hover); }
+button.ghost, .btn.ghost { background: transparent; color: var(--text); border-color: var(--line-strong); }
+button.ghost:hover, .btn.ghost:hover { background: var(--layer-hover); }
+button.quiet { background: transparent; color: var(--text-2); border-color: transparent; }
+button.quiet:hover { background: var(--layer-hover); color: var(--text); }
+button.danger { background: var(--danger); color: #fff; }
+button.danger:hover { background: var(--danger-hover); }
+button:disabled { opacity: .4; cursor: not-allowed; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.empty { color: var(--text-3); padding: 16px 0; border-bottom: 1px solid var(--line); }
+form.defaults { display: grid; gap: 20px; padding: 16px 0 0; }
+.field { display: grid; gap: 6px; }
+.field > label, .field > .label { font-size: 13px; color: var(--text-2); }
+select, input[type=number], input[type=text] {
+  font: 400 15px/1 var(--sans); height: 40px; padding: 0 12px; border-radius: 0; width: 100%;
+  background-color: var(--layer); color: var(--text); border: 0; border-bottom: 1px solid var(--line-strong);
+}
+select { font-family: var(--mono); font-size: 14px; }
+input[type=number] { font-variant-numeric: tabular-nums; max-width: 120px; }
+.seg { display: flex; flex-wrap: wrap; border: 1px solid var(--line-strong); width: fit-content; }
+.seg label { position: relative; }
+.seg input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+.seg span { display: inline-flex; align-items: center; min-height: 38px; padding: 0 14px; font-size: 14px; color: var(--text-2); }
+.seg input:checked + span { background: var(--btn); color: var(--btn-text); }
+.seg input:focus-visible + span { outline: 2px solid var(--focus); outline-offset: -2px; }
+.switch { display: flex; align-items: center; gap: 10px; cursor: pointer; width: fit-content; min-height: 40px; }
+.switch input { width: 18px; height: 18px; margin: 0; accent-color: var(--text); }
+.formfoot { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.fleet { display: flex; gap: 8px; flex-wrap: wrap; padding: 16px 0 0; }
+dialog {
+  border: 1px solid var(--line-strong); border-radius: 0; padding: 0; width: min(440px, calc(100vw - 32px));
+  background: var(--bg); color: var(--text); overscroll-behavior: contain;
+}
+dialog::backdrop { background: rgba(0,0,0,.55); }
+.dlg { padding: 20px; display: grid; gap: 16px; }
+.dlg h3 { margin: 0; font-size: 17px; font-weight: 600; text-wrap: balance; overflow-wrap: anywhere; }
+.dlg p { margin: 0; color: var(--text-2); font-size: 14px; overflow-wrap: anywhere; }
+.dlg .warn { color: var(--text); font-weight: 500; }
+.dlg .foot { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.menu { display: grid; border-top: 1px solid var(--line); }
+.menu button { justify-content: flex-start; background: transparent; color: var(--text); border: 0; border-bottom: 1px solid var(--line); min-height: 48px; padding: 0 4px; font-weight: 400; }
+.menu button:hover { background: var(--layer-hover); }
+.menu button .sub { margin-left: auto; color: var(--text-3); font-size: 13px; }
+.pick { display: grid; max-height: 50vh; overflow: auto; border-top: 1px solid var(--line); overscroll-behavior: contain; }
+.pick button { justify-content: space-between; background: transparent; color: var(--text); border: 0; border-bottom: 1px solid var(--line); min-height: 48px; padding: 0 4px; font-weight: 400; text-align: left; }
+.pick button:hover { background: var(--layer-hover); }
+.pick .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#toast {
+  position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(16px + env(safe-area-inset-bottom));
+  max-width: min(560px, calc(100vw - 32px)); background: var(--btn); color: var(--btn-text);
+  padding: 12px 16px; font-size: 14px; opacity: 0; pointer-events: none; transition: opacity .15s ease;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+#toast.show { opacity: 1; }
+.actions button, .actions .btn { padding: 0 12px; }
+.more { margin-top: 12px; }
+.alert { border-left: 3px solid var(--text); background: var(--layer); padding: 12px 14px; margin: 0 0 16px; font-size: 14px; }
+.login { max-width: 360px; margin: 18vh auto 0; padding: 0 16px; display: grid; gap: 20px; }
+.login form { display: grid; gap: 16px; }
+.login .err { color: var(--danger); font-size: 14px; min-height: 20px; margin: 0; }
+input[type=password], textarea {
+  font: 400 15px/1.4 var(--sans); padding: 10px 12px; border-radius: 0; width: 100%;
+  background-color: var(--layer); color: var(--text); border: 0; border-bottom: 1px solid var(--line-strong);
+}
+input[type=password] { height: 40px; }
+textarea { min-height: 120px; resize: vertical; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 20px; }
+[hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<section class="login" id="login" hidden>
+  <h1>Claude Crew</h1>
+  <form id="loginForm">
+    <div class="field">
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+    </div>
+    <p class="err" id="loginErr" aria-live="polite"></p>
+    <button type="submit" id="loginBtn">Sign In</button>
+  </form>
+</section>
+<a class="skip" href="#sessions">Skip to Sessions</a>
+<main id="app" hidden>
+  <header>
+    <h1>Claude Crew</h1>
+    <div class="hdr-tools">
+      <span class="muted" id="updated">Loading…</span>
+      <button class="quiet" id="refresh" type="button">Refresh</button>
+      <button class="quiet" id="logout" type="button">Sign Out</button>
+    </div>
+  </header>
+
+  <div id="dupes"></div>
+  <h2 id="sessions">Sessions</h2>
+  <ul id="slots"></ul>
+
+  <h2 id="stopped">Stopped</h2>
+  <ul id="convs"></ul>
+
+  <h2 id="defaults">Defaults</h2>
+  <form class="defaults" id="defaultsForm" autocomplete="off">
+    <div class="field">
+      <label for="dModel">Model</label>
+      <select id="dModel" name="model" translate="no"></select>
+    </div>
+    <div class="field">
+      <span class="label" id="effortLabel">Effort</span>
+      <div class="seg" role="radiogroup" aria-labelledby="effortLabel" id="dEffort"></div>
+    </div>
+    <div class="grid2">
+      <div class="field">
+        <label for="dSlots">Slots</label>
+        <input id="dSlots" name="slots" type="number" inputmode="numeric" min="1" max="12" autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="dPerm">Permission Mode</label>
+        <select id="dPerm" name="permission_mode" translate="no"></select>
+      </div>
+      <div class="field">
+        <label for="dAuto">Auto-Compact</label>
+        <input id="dAuto" name="autocompact" type="text" autocomplete="off" spellcheck="false" placeholder="auto or 400k…">
+      </div>
+    </div>
+    <label class="switch"><input type="checkbox" id="dRemote" name="remote_control"> Remote Control</label>
+    <label class="switch"><input type="checkbox" id="dBoot" name="boot"> Start on Boot</label>
+    <div class="formfoot">
+      <button type="submit" id="saveDefaults">Save Defaults</button>
+      <span class="muted" id="followNote"></span>
+    </div>
+  </form>
+  <h2 id="fleet">Fleet</h2>
+  <div class="fleet">
+    <button class="ghost" type="button" id="startSaved">Start Saved Sessions</button>
+    <button class="ghost" type="button" id="saveSlots">Save Current Sessions</button>
+    <button class="ghost" type="button" id="relabel">Fix Window Labels</button>
+    <button class="ghost" type="button" id="restartAll">Restart All…</button>
+    <button class="ghost" type="button" id="updateClaude">Update Claude Code…</button>
+  </div>
+</main>
+
+<dialog id="dlg"><div class="dlg" id="dlgBody"></div></dialog>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script>
+const MODELS = ["claude-opus-5-5","claude-opus-5","claude-sonnet-5-5","claude-sonnet-5","claude-fable-5-1","claude-haiku-4-5"];
+const PERMS = ["auto","acceptEdits","manual","plan","dontAsk","bypassPermissions"];
+const EFFORTS = ["low","medium","high","xhigh","max"];
+const STATE_LABEL = { working: "Working", idle: "Idle", dialog: "Needs You", draft: "Unsent Draft", free: "Free" };
+let S = null, lastUpdated = 0, dirty = false;
+const $ = (id) => document.getElementById(id);
+const el = (tag, attrs = {}, ...kids) => {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (v == null || v === false) continue;
+    if (k === "class") n.className = v; else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+    else if (v === true) n.setAttribute(k, ""); else n.setAttribute(k, v);
+  }
+  for (const k of kids.flat()) if (k != null) n.append(k.nodeType ? k : document.createTextNode(k));
+  return n;
+};
+const name = (t) => (t || "").replace(/^\[VPS\]\s*/i, "");
+const short = (m) => (m || "").replace(/^claude-/, "");
+const rtf = new Intl.RelativeTimeFormat(navigator.languages, { numeric: "auto", style: "narrow" });
+
+function toast(msg) {
+  const t = $("toast"); t.textContent = msg; t.classList.add("show");
+  clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove("show"), 4200);
+}
+
+const post = (path, payload) => fetch(path, { method: "POST", headers: { "Content-Type": "application/json", "X-Crew": "1" }, body: JSON.stringify(payload) });
+
+async function act(payload, busyBtn, busyText) {
+  const label = busyBtn && busyBtn.textContent;
+  if (busyBtn) { busyBtn.disabled = true; busyBtn.textContent = busyText || "Working…"; }
+  try {
+    const r = await post("/api/action", payload);
+    if (r.status === 401) { showLogin(); return false; }
+    const j = await r.json().catch(() => ({ ok: false, output: "The server sent no readable reply. Refresh and check the session." }));
+    const last = (j.output || "").split("\n").filter(Boolean).slice(-2).join("\n").replace(/^crew: /, "");
+    toast(j.ok ? (j.message || "Done.") : (last || "Failed. Check the server log."));
+    return j.ok;
+  } catch {
+    toast("Could not reach the server. Check your connection, then Refresh.");
+    return false;
+  } finally {
+    if (busyBtn) { busyBtn.disabled = false; busyBtn.textContent = label; }
+    load();
+  }
+}
+
+function openDialog(build) {
+  const d = $("dlg"), b = $("dlgBody"); b.replaceChildren(...build(() => d.close()));
+  d.showModal();
+}
+
+function stateBadge(s) {
+  const cls = s.state === "working" ? "working" : (s.state === "dialog" || s.state === "draft") ? "needs" : s.state === "free" ? "free" : "idle";
+  return el("span", { class: "state " + cls }, el("span", { class: "dot", "aria-hidden": "true" }), STATE_LABEL[s.state] || s.state);
+}
+
+function metaLine(s) {
+  if (s.state === "free") return el("div", { class: "meta" }, stateBadge(s));
+  const d = S.defaults;
+  const model = el("span", { translate: "no" }, short(s.model || d.model));
+  const effort = el("span", {}, s.effort || d.effort);
+  const follows = s.follows_default_model && s.follows_default_effort ? el("span", { class: "dim" }, " · default") : null;
+  return el("div", { class: "meta" }, stateBadge(s), el("span", { class: "dim" }, " · "), model, el("span", { class: "dim" }, " · "), effort, follows);
+}
+
+function busyWarning(s, verb) {
+  return s.state === "working" ? el("p", { class: "warn" }, `This session is working. ${verb} ends its current answer.`) :
+         s.state === "draft" ? el("p", { class: "warn" }, `This session has an unsent draft. ${verb} discards it.`) : null;
+}
+
+function slotMenu(s) {
+  const others = S.slots.filter(o => o.id && o.slot !== s.slot);
+  openDialog(close => [
+    el("h3", {}, name(s.title) || `Slot ${s.slot}`),
+    el("p", { class: "mono", translate: "no" }, `Claude${s.slot} · ${s.id.slice(0, 8)}`),
+    el("div", { class: "menu" },
+      el("button", { type: "button", onclick: () => confirmRelaunch(s) }, "Restart…", el("span", { class: "sub" }, "same conversation")),
+      el("button", { type: "button", onclick: () => sendPrompt(s) }, "Send Prompt…"),
+      el("button", { type: "button", onclick: () => pickConv(s, close) }, "Replace…", el("span", { class: "sub" }, "with a stopped session")),
+      el("button", { type: "button", disabled: !others.length, onclick: () => pickSwap(s, others, close) }, "Swap…", el("span", { class: "sub" }, "with another slot")),
+      el("button", { type: "button", onclick: () => confirmClear(s) }, "Start Fresh…", el("span", { class: "sub" }, "new conversation here")),
+      el("button", { type: "button", onclick: () => confirmStop(s, close) }, "Stop…", el("span", { class: "sub" }, "keeps the conversation")),
+    ),
+    el("div", { class: "foot" }, el("button", { class: "ghost", type: "button", onclick: close }, "Close")),
+  ]);
+}
+
+function pickConv(s, close) {
+  if (!S.conversations.length) return toast("There are no stopped sessions to bring in.");
+  openDialog(close2 => [
+    el("h3", {}, s ? `Replace “${name(s.title)}”` : "Resume a Session"),
+    s ? busyWarning(s, "Replacing it") : null,
+    el("div", { class: "pick" }, S.conversations.map(c =>
+      el("button", { type: "button", onclick: async (e) => {
+        const target = s ? s.slot : (S.slots.find(x => x.state === "free") || {}).slot;
+        if (!target) return toast("There is no free slot. Stop a session or raise Slots in Defaults.");
+        if (await act({ op: "switch", slot: target, conv: c.id }, e.currentTarget, "Starting…")) close2();
+      } }, el("span", { class: "t" }, name(c.title) || c.id.slice(0, 8)), el("span", { class: "muted mono", translate: "no" }, c.id.slice(0, 8)))
+    )),
+    el("div", { class: "foot" }, el("button", { class: "ghost", type: "button", onclick: close2 }, "Cancel")),
+  ]);
+}
+
+function pickSwap(s, others) {
+  openDialog(close => [
+    el("h3", {}, `Swap “${name(s.title)}”`),
+    el("p", {}, "Both sessions keep their conversation, model and effort. Only their slots change."),
+    [s, ...others].some(x => x.state === "working") ? el("p", { class: "warn" }, "A working session ends its current answer.") : null,
+    el("div", { class: "pick" }, others.map(o =>
+      el("button", { type: "button", onclick: async (e) => {
+        if (await act({ op: "switch", slot: s.slot, conv: o.id }, e.currentTarget, "Swapping…")) close();
+      } }, el("span", { class: "t" }, `${o.slot}  ${name(o.title)}`), el("span", { class: "muted" }, STATE_LABEL[o.state]))
+    )),
+    el("div", { class: "foot" }, el("button", { class: "ghost", type: "button", onclick: close }, "Cancel")),
+  ]);
+}
+
+function confirmStop(s) {
+  openDialog(close => [
+    el("h3", {}, `Stop “${name(s.title)}”?`),
+    el("p", {}, "The conversation is kept under Stopped, and you can resume it later."),
+    busyWarning(s, "Stopping it"),
+    el("div", { class: "foot" },
+      el("button", { class: "ghost", type: "button", onclick: close }, "Cancel"),
+      el("button", { type: "button", onclick: async (e) => { if (await act({ op: "stop", slot: s.slot }, e.currentTarget, "Stopping…")) close(); } }, "Stop Session")),
+  ]);
+}
+
+function confirmRelaunch(s) {
+  openDialog(close => [
+    el("h3", {}, `Restart “${name(s.title)}”?`),
+    el("p", {}, `It resumes the same conversation on ${short(s.model || S.defaults.model)} at ${s.effort || S.defaults.effort} effort.`),
+    busyWarning(s, "Restarting it"),
+    el("div", { class: "foot" },
+      el("button", { class: "ghost", type: "button", onclick: close }, "Cancel"),
+      el("button", { type: "button", onclick: async (e) => { if (await act({ op: "relaunch", slot: s.slot }, e.currentTarget, "Restarting…")) close(); } }, "Restart Session")),
+  ]);
+}
+
+function confirmClear(s) {
+  openDialog(close => {
+    const input = el("input", { type: "text", id: "clearTitle", name: "session-title", autocomplete: "off", spellcheck: "false", placeholder: "Leave empty to number the current title…" });
+    return [
+      el("h3", {}, `Start Fresh in Slot ${s.slot}?`),
+      el("p", {}, `A new conversation replaces “${name(s.title)}” here. The old one stays under Stopped.`),
+      busyWarning(s, "Starting fresh"),
+      el("form", { style: "display:grid;gap:16px", onsubmit: async (e) => {
+          e.preventDefault();
+          if (await act({ op: "clear", slot: s.slot, title: input.value.trim() }, e.submitter, "Starting…")) close();
+        } },
+        el("div", { class: "field" }, el("label", { for: "clearTitle" }, "New Title"), input),
+        el("div", { class: "foot" },
+          el("button", { class: "ghost", type: "button", onclick: close }, "Cancel"),
+          el("button", { type: "submit" }, "Start Fresh"))),
+    ];
+  });
+}
+
+function sendPrompt(s) {
+  openDialog(close => {
+    const ta = el("textarea", { id: "promptText", name: "prompt", autocomplete: "off", placeholder: "What should it do next…" });
+    return [
+      el("h3", {}, `Send to “${name(s.title)}”`),
+      s.state === "working" ? el("p", { class: "warn" }, "This session is working. Wait until it is idle, or the prompt is refused.") : null,
+      el("form", { style: "display:grid;gap:16px", onsubmit: async (e) => {
+          e.preventDefault();
+          if (!ta.value.trim()) { toast("Write a prompt first."); return ta.focus(); }
+          if (await act({ op: "prompt", slot: s.slot, text: ta.value }, e.submitter, "Sending…")) close();
+        } },
+        el("div", { class: "field" }, el("label", { for: "promptText" }, "Prompt"), ta),
+        el("p", {}, "Line breaks are sent as spaces."),
+        el("div", { class: "foot" },
+          el("button", { class: "ghost", type: "button", onclick: close }, "Cancel"),
+          el("button", { type: "submit" }, "Send Prompt"))),
+    ];
+  });
+}
+
+function newSession(s) {
+  openDialog(close => {
+    const input = el("input", { type: "text", id: "newTitle", name: "session-title", autocomplete: "off", spellcheck: "false", placeholder: "[VPS] Project Name…", value: "[VPS] " });
+    const go = async (e) => {
+      e.preventDefault();
+      const title = input.value.trim();
+      if (!title || title === "[VPS]") { toast("Enter a title for the session."); return input.focus(); }
+      if (await act({ op: "new", slot: s.slot, title }, e.submitter || e.currentTarget, "Starting…")) close();
+    };
+    return [
+      el("h3", {}, `New Session in Slot ${s.slot}`),
+      el("form", { onsubmit: go, style: "display:grid;gap:16px" },
+        el("div", { class: "field" }, el("label", { for: "newTitle" }, "Title"), input),
+        el("p", {}, "It follows the defaults. Change its model or effort later from inside the session."),
+        el("div", { class: "foot" },
+          el("button", { class: "ghost", type: "button", onclick: close }, "Cancel"),
+          el("button", { type: "submit" }, "Start Session"))),
+    ];
+  });
+}
+
+function confirmDelete(c) {
+  openDialog(close => [
+    el("h3", {}, `Delete “${name(c.title) || c.id.slice(0, 8)}”?`),
+    el("p", {}, "The transcript and its uploads are removed. This cannot be undone."),
+    el("div", { class: "foot" },
+      el("button", { class: "ghost", type: "button", onclick: close }, "Cancel"),
+      el("button", { class: "danger", type: "button", onclick: async (e) => { if (await act({ op: "delete", conv: c.id }, e.currentTarget, "Deleting…")) close(); } }, "Delete")),
+  ]);
+}
+
+function confirmFleet(kind) {
+  const restart = kind === "restart";
+  const working = S.slots.filter(s => s.state === "working").length;
+  openDialog(close => [
+    el("h3", {}, restart ? "Restart All Sessions?" : "Update Claude Code?"),
+    el("p", {}, restart ? "Every session stops and resumes its conversation within about a minute." :
+                          "Installs the latest Claude Code, then restarts every session."),
+    working ? el("p", { class: "warn" }, `${working} ${working === 1 ? "session is" : "sessions are"} working and will lose the current answer.`) : null,
+    el("div", { class: "foot" },
+      el("button", { class: "ghost", type: "button", onclick: close }, "Cancel"),
+      el("button", { type: "button", onclick: async (e) => { if (await act({ op: kind }, e.currentTarget, restart ? "Restarting…" : "Updating…")) close(); } },
+        restart ? "Restart All" : "Update & Restart")),
+  ]);
+}
+
+function renderSlots() {
+  const ul = $("slots");
+  ul.replaceChildren(...S.slots.map(s => {
+    const free = s.state === "free";
+    const actions = free ?
+      [el("button", { class: "ghost", type: "button", onclick: () => pickConv(null) , disabled: !S.conversations.length }, "Resume…"),
+       el("button", { type: "button", onclick: () => newSession(s) }, "New Session…")] :
+      [s.remote_url ? el("a", { class: "btn", href: s.remote_url, target: "_blank", rel: "noopener", "aria-label": `Open ${s.title} in remote control` }, "Open", el("span", { "aria-hidden": "true" }, " ↗"))
+                    : el("button", { type: "button", disabled: true, title: "Remote control is not active for this session" }, "Open", el("span", { "aria-hidden": "true" }, " ↗")),
+       el("button", { class: "ghost", type: "button", "aria-label": `More actions for ${s.title}`, onclick: () => slotMenu(s) }, "More…")];
+    return el("li", { class: "row" },
+      el("span", { class: "slotno", "aria-hidden": "true" }, String(s.slot)),
+      el("div", { class: "body" },
+        el("div", { class: "title", translate: "no" }, free ? `Slot ${s.slot}` : (name(s.title) || s.id.slice(0, 8))),
+        metaLine(s)),
+      el("div", { class: "actions" }, actions));
+  }));
+}
+
+let showAll = false;
+function renderConvs() {
+  const ul = $("convs");
+  if (!S.conversations.length) return ul.replaceChildren(el("li", { class: "empty" }, "No stopped sessions."));
+  const hasFree = S.slots.some(s => s.state === "free");
+  const list = showAll ? S.conversations : S.conversations.slice(0, 6);
+  const rest = S.conversations.length - list.length;
+  ul.replaceChildren(...list.map(c => el("li", { class: "row" },
+    el("div", { class: "body" },
+      el("div", { class: "title", translate: "no" }, name(c.title) || "Untitled"),
+      el("div", { class: "meta mono", translate: "no" }, c.id.slice(0, 8))),
+    el("div", { class: "actions" },
+      el("button", { class: "ghost", type: "button", disabled: !hasFree, title: hasFree ? null : "No free slot",
+        onclick: async (e) => { const f = S.slots.find(s => s.state === "free"); if (f) await act({ op: "switch", slot: f.slot, conv: c.id }, e.currentTarget, "Starting…"); } }, "Resume"),
+      el("button", { class: "quiet", type: "button", "aria-label": `Delete ${c.title || c.id.slice(0, 8)}`, onclick: () => confirmDelete(c) }, "Delete…")))),
+    rest > 0 ? el("li", {}, el("button", { class: "ghost more", type: "button", onclick: () => { showAll = true; renderConvs(); } }, `Show All (${S.conversations.length})`)) : null);
+}
+
+function renderDefaults() {
+  if (dirty) return;
+  const d = S.defaults;
+  const sel = $("dModel");
+  const opts = MODELS.includes(d.model) ? MODELS : [d.model, ...MODELS];
+  sel.replaceChildren(...opts.map(m => el("option", { value: m, selected: m === d.model }, short(m))));
+  $("dEffort").replaceChildren(...EFFORTS.map(e => el("label", {},
+    el("input", { type: "radio", name: "effort", value: e, checked: e === d.effort }), el("span", {}, e[0].toUpperCase() + e.slice(1)))));
+  $("dSlots").value = d.slots;
+  const perms = PERMS.includes(d.permission_mode) ? PERMS : [d.permission_mode, ...PERMS];
+  $("dPerm").replaceChildren(...perms.map(p => el("option", { value: p, selected: p === d.permission_mode }, p)));
+  $("dAuto").value = d.autocompact;
+  $("dRemote").checked = d.remote_control === "on";
+  $("dBoot").checked = S.boot === "on";
+  const n = S.slots.filter(s => s.id && s.follows_default_model && s.follows_default_effort).length;
+  $("followNote").textContent = n ? `${n} ${n === 1 ? "session follows" : "sessions follow"} the defaults and ${n === 1 ? "picks" : "pick"} up changes on the next restart.` : "No running session follows the defaults.";
+}
+
+function renderUpdated() {
+  if (!lastUpdated) return;
+  const sec = Math.round(Date.now() / 1000 - lastUpdated);
+  $("updated").textContent = "Updated " + (sec < 5 ? "just now" : rtf.format(-sec, "second"));
+}
+
+function renderDupes() {
+  $("dupes").replaceChildren(...(S.duplicates || []).map(d => {
+    const t = (S.slots.find(s => s.id === d.id) || {}).title;
+    return el("p", { class: "alert", role: "alert" }, `“${name(t) || d.id.slice(0, 8)}” runs in slots ${d.slots[0]} and ${d.slots[1]} at once. Stop one of them.`);
+  }));
+}
+
+function showLogin() {
+  $("app").hidden = true; $("login").hidden = false; $("dlg").open && $("dlg").close();
+  $("password").focus();
+}
+
+async function load() {
+  try {
+    const r = await fetch("/api/state", { cache: "no-store" });
+    if (r.status === 401) return showLogin();
+    const j = await r.json();
+    $("login").hidden = true; $("app").hidden = false;
+    if (!j.data) { $("updated").textContent = j.error ? "Status failed. Retrying…" : "Loading…"; return; }
+    S = j.data; lastUpdated = j.updated;
+    renderDupes(); renderSlots(); renderConvs(); renderDefaults(); renderUpdated();
+  } catch { $("updated").textContent = "Offline. Retrying…"; }
+}
+
+$("loginForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const btn = $("loginBtn"); btn.disabled = true; btn.textContent = "Signing In…"; $("loginErr").textContent = "";
+  try {
+    const r = await post("/api/login", { password: $("password").value });
+    if (r.ok) { $("password").value = ""; await load(); }
+    else $("loginErr").textContent = (await r.json().catch(() => ({}))).error || "Sign-in failed. Try again.";
+  } catch { $("loginErr").textContent = "Could not reach the server. Check your connection."; }
+  finally { btn.disabled = false; btn.textContent = "Sign In"; }
+});
+$("logout").addEventListener("click", async () => { await post("/api/logout", {}).catch(() => {}); showLogin(); });
+
+$("defaultsForm").addEventListener("input", () => { dirty = true; });
+$("defaultsForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const slots = parseInt($("dSlots").value, 10);
+  const sl = $("dSlots");
+  sl.setCustomValidity(slots >= 1 && slots <= 12 ? "" : "Enter a number from 1 to 12.");
+  if (!sl.reportValidity()) return sl.focus();
+  const auto = $("dAuto").value.trim();
+  const au = $("dAuto");
+  au.setCustomValidity(/^(auto|[0-9]+[kKmM]?)$/.test(auto) ? "" : "Enter auto or a size such as 400k.");
+  if (!au.reportValidity()) return au.focus();
+  let ok = await act({ op: "defaults", model: f.get("model"), effort: f.get("effort"), slots, permission_mode: f.get("permission_mode"),
+                       autocompact: auto, remote_control: $("dRemote").checked ? "on" : "off" }, $("saveDefaults"), "Saving…");
+  const boot = $("dBoot").checked ? "on" : "off";
+  if (ok && boot !== S.boot) ok = await act({ op: "boot", value: boot }, $("saveDefaults"), "Saving…");
+  if (ok) { dirty = false; renderDefaults(); }
+});
+window.addEventListener("beforeunload", (e) => { if (dirty) { e.preventDefault(); e.returnValue = ""; } });
+$("refresh").addEventListener("click", load);
+$("restartAll").addEventListener("click", () => confirmFleet("restart"));
+$("startSaved").addEventListener("click", (e) => act({ op: "start" }, e.currentTarget, "Starting…"));
+$("saveSlots").addEventListener("click", (e) => act({ op: "save" }, e.currentTarget, "Saving…"));
+$("relabel").addEventListener("click", (e) => act({ op: "relabel" }, e.currentTarget, "Fixing…"));
+$("updateClaude").addEventListener("click", () => confirmFleet("update"));
+$("dlg").addEventListener("click", (e) => { if (e.target === $("dlg")) $("dlg").close(); });
+
+load(); setInterval(load, 10000); setInterval(renderUpdated, 1000);
+</script>
+</body>
+</html>

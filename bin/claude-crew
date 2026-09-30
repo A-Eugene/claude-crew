@@ -41,6 +41,7 @@
 #   prompt <target> <text>     type keystrokes into a slot's input box, verbatim
 #   model  <target> <model>    relaunch on a new model; "default" follows crew.conf again
 #   effort <target> <level>    relaunch at a new effort; "default" follows crew.conf again
+#   relaunch <target>          stop and resume one slot on its conversation, model and effort
 #   update                     upgrade the claude binary, then restart
 #   whoami                     which slot is running the caller (guard input)
 #   relabel                    rename windows to match what each slot really runs
@@ -79,6 +80,11 @@ HOME="${HOME:-/root}"; export HOME
 # here rather than trusting the caller's environment, so inline, systemd and
 # cron all behave alike.
 PATH="$HOME/.local/bin:$PATH"; export PATH
+
+# Every python3 call here uses only the standard library. A pyenv shim on PATH
+# costs about 0.4 s per call, and status makes dozens, so call the system
+# interpreter directly when there is one.
+if [ -x /usr/bin/python3 ]; then python3() { /usr/bin/python3 "$@"; }; fi
 
 # --- config -----------------------------------------------------------------
 WORKDIR=/root
@@ -760,10 +766,11 @@ cmd_setup() {
   # call from start/restart as a gate.
   [ -f "$CONF" ] && { # shellcheck disable=SC1090
     source "$CONF"; }
+  local slots_given=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --workdir)         WORKDIR="$2"; shift 2 ;;
-      --slots)           SLOTS="$2"; shift 2 ;;
+      --slots)           SLOTS="$2"; slots_given=1; shift 2 ;;
       --model)           MODEL="$2"; shift 2 ;;
       --effort)          EFFORT="$2"; shift 2 ;;
       --permission-mode) PERMISSION_MODE="$2"; shift 2 ;;
@@ -788,12 +795,29 @@ cmd_setup() {
   # claude rejects a bad value at launch, which would leave every pane at a bare shell.
   [[ "$AUTOCOMPACT" =~ ^(auto|[0-9]+[kKmM]?)$ ]] || die "setup: --autocompact must be auto or a size from 100k to 1M"
 
+  # Slots above the count are no longer scanned, so a claude left running in one
+  # would keep going where nothing can see or stop it.
+  local extra=() s n
+  if [ "$slots_given" = 1 ]; then
+    while IFS= read -r s; do
+      n=${s#"$TMUX_PREFIX"}
+      [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -gt "$SLOTS" ] || continue
+      [ -z "$(claude_pid_in "$n")" ] ||
+        die "setup: $s still runs a session ($(title_of_slot "$n")). Stop or move it first: claude-crew stop $n"
+      extra+=("$s")
+    done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E "^${TMUX_PREFIX}[0-9]+\$" || true)
+  fi
+
   {
     echo "# crew.conf — written by \`claude-crew setup\`. Safe to edit by hand."
     echo "# Regenerate or patch with: claude-crew setup --model sonnet --slots 6"
     local k
     for k in "${CONF_KEYS[@]}"; do printf '%s=%q\n' "$k" "${!k}"; done
   } > "$CONF"
+
+  for s in ${extra[@]+"${extra[@]}"}; do
+    tmux kill-session -t "=$s" && echo "closed $s, an empty pane above the slot count"
+  done
 
   local pd; pd=$(projdir)
   echo "wrote $CONF"
@@ -839,12 +863,18 @@ cmd_status_json() {
   while IFS=$'\t' read -r rid rtitle; do
     [ -n "$rid" ] && [ -z "${SLOT_OF_CONV[$rid]:-}" ] && convs+="$rid"$'\t'"$rtitle"$'\n'
   done < <(list_convs 25)
-  SLOTS_TSV="$tsv" CONVS_TSV="$convs" python3 - "$MODEL" "$EFFORT" "$SLOTS" "$REMOTE_CONTROL" "$AUTOCOMPACT" <<'PY2'
+  local boot=off d dupes=""
+  if [ -f "${CREW_UNIT_DIR:-/etc/systemd/system}/claude-crew.service" ]; then boot=on; fi
+  for d in "${DUPES[@]}"; do dupes+="$d"$'\n'; done
+  SLOTS_TSV="$tsv" CONVS_TSV="$convs" DUPES_TXT="$dupes" python3 - "$MODEL" "$EFFORT" "$SLOTS" "$REMOTE_CONTROL" "$AUTOCOMPACT" "$PERMISSION_MODE" "$boot" <<'PY2'
 import json, os, sys
-model, effort, slots, rc, ac = sys.argv[1:6]
+model, effort, slots, rc, ac, pm, boot = sys.argv[1:8]
 out = {"defaults": {"model": model, "effort": effort, "slots": int(slots),
-                    "remote_control": rc, "autocompact": ac},
-       "slots": [], "conversations": []}
+                    "remote_control": rc, "autocompact": ac, "permission_mode": pm},
+       "boot": boot, "slots": [], "conversations": [], "duplicates": []}
+for line in os.environ["DUPES_TXT"].splitlines():
+    cid, a, b = (line.split() + ["", "", ""])[:3]
+    out["duplicates"].append({"id": cid, "slots": [int(a), int(b)]})
 for line in os.environ["SLOTS_TSV"].splitlines():
     n, cid, title, state, m, e, sm, se, url = (line.split("\t") + [""] * 9)[:9]
     out["slots"].append({"slot": int(n), "id": cid or None, "title": title or None,
@@ -1535,11 +1565,11 @@ cmd_prompt() {
 # Model and effort are launch flags, so changing one is the same primitive as
 # switch: stop the process, start it again on the same conversation. There is no
 # in-band round-trip to wedge.
-relaunch_with() {       # $1=target $2=model-or-empty $3=effort-or-empty
+relaunch_with() {       # $1=target $2=model-or-empty $3=effort-or-empty [$4=what was asked]
   scan_slots
   detect_self
   local n; n=$(resolve_slot "$1")
-  refuse_self "$n" "changing model or effort"
+  refuse_self "$n" "${4:-changing model or effort}"
   local id="${CONV_OF_SLOT[$n]:-}" title; title=$(conv_title "$id"); title=${title:-$(title_of_slot "$n")}
   [ -n "$id" ] || die "$(sess_name "$n") holds no resumable conversation"
   local keep_m keep_e; IFS=$'\t' read -r keep_m keep_e < <(kept_flags "$n" "$id")
@@ -1573,6 +1603,12 @@ cmd_effort() {
   [ $# -eq 2 ] || die "effort: usage: claude-crew effort <target> <low|medium|high|xhigh|max|default>"
   case "$2" in low|medium|high|xhigh|max|default) ;; *) die "effort: must be low|medium|high|xhigh|max|default" ;; esac
   relaunch_with "$1" "" "$2"
+}
+
+# Stop and resume one slot on the conversation, model and effort it runs now.
+cmd_relaunch() {
+  [ $# -eq 1 ] || die "relaunch: usage: claude-crew relaunch <target>"
+  relaunch_with "$1" "" "" "relaunch"
 }
 
 # Stop a slot and take it out of the saved slots, so start and restart leave it
@@ -1706,6 +1742,7 @@ case "$cmd" in
   prompt)  load_conf; cmd_prompt "$@" ;;
   model)   load_conf; cmd_model "$@" ;;
   effort)  load_conf; cmd_effort "$@" ;;
+  relaunch) load_conf; cmd_relaunch "$@" ;;
   update)  load_conf; cmd_update "$@" ;;
   -h|--help|help) sed -n '2,/^set -euo/p' "$0" | sed 's/^# \{0,1\}//;$d' ;;
   *) die "unknown command '$cmd' (try: claude-crew --help)" ;;

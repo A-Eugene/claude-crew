@@ -63,6 +63,7 @@ level cheap rather than destructive.
 | `claude-crew delete <conversation> [--yes]` | Stop it if live, then delete its transcript, its sidecar directory and its uploads. Without `--yes` it only prints what would go. There is no backup. |
 | `claude-crew switch <A> <B>` | Put conversation B in A's slot. Swaps if B is already live. |
 | `claude-crew prompt <target> <text>` | Type keystrokes into that slot's input box. Not a messaging channel — see below. |
+| `claude-crew relaunch <target>` | Stop and resume one slot on the conversation, model and effort it runs now. |
 | `claude-crew model <target> <model>` | Relaunch that conversation on a different model. |
 | `claude-crew effort <target> <level>` | Relaunch it at a different effort level. |
 | `claude-crew update` | Upgrade the claude binary, then restart. |
@@ -164,12 +165,43 @@ Config lands at `~/.claude/skills/claude-crew/crew.conf`. It is gitignored.
 As a Claude Code skill, `SKILL.md` also lets any session drive the fleet by
 asking in plain language.
 
+## Web page
+
+`web/` holds a page for the fleet: what runs in each slot, and every command
+above as a button. Every action runs one `claude-crew` command, and the page
+reads `claude-crew status --json`, so it holds no fleet logic of its own. Model
+and effort for a single session are changed inside that session, through remote
+control. The page changes the defaults.
+
+```
+web/server.py                  Python standard-library server on 127.0.0.1:3115
+web/index.html                 the page, no build step
+web/claude-crew-web.service    systemd unit
+web/nginx.conf                 HTTPS proxy, with crew.example.com to replace
+```
+
+It signs in with one password. The server keeps a PBKDF2 hash of it and issues a
+30-day login token in an HttpOnly cookie. Five wrong passwords from one address
+lock that address out for 15 minutes.
+
+```sh
+python3 ~/.claude/skills/claude-crew/web/server.py set-password
+cp ~/.claude/skills/claude-crew/web/claude-crew-web.service /etc/systemd/system/
+systemctl enable --now claude-crew-web
+certbot certonly --nginx -d crew.example.com
+sed 's/crew.example.com/<your host>/g' ~/.claude/skills/claude-crew/web/nginx.conf > /etc/nginx/conf.d/claude-crew-web.conf
+nginx -t && systemctl reload nginx
+```
+
+The password hash and the login tokens live in `~/.config/claude-crew-web/`,
+outside the repository. Setting a new password signs every browser out.
+
 ## Configuration
 
 | Key | Default | Notes |
 |---|---|---|
 | `WORKDIR` | `/root` | Working directory, and which transcript store is read. |
-| `SLOTS` | `5` | Number of parking spaces. |
+| `SLOTS` | `5` | Number of parking spaces. Lowering it closes empty panes above the new count, and is refused while one of them still runs a session. |
 | `MODEL` | `opus` | An alias resolves to the latest of that family. |
 | `EFFORT` | `high` | `low` `medium` `high` `xhigh` `max` |
 | `PERMISSION_MODE` | `auto` | |
