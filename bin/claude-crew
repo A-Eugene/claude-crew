@@ -39,8 +39,8 @@
 #                              stop it if live, then delete its transcript for good
 #   switch <A> <B>             put conversation B in A's slot; swap if B is live
 #   prompt <target> <text>     type keystrokes into a slot's input box, verbatim
-#   model  <target> <model>    relaunch that slot's conversation on a new model
-#   effort <target> <level>    relaunch that slot's conversation at a new effort
+#   model  <target> <model>    relaunch on a new model; "default" follows crew.conf again
+#   effort <target> <level>    relaunch at a new effort; "default" follows crew.conf again
 #   update                     upgrade the claude binary, then restart
 #   whoami                     which slot is running the caller (guard input)
 #   relabel                    rename windows to match what each slot really runs
@@ -509,6 +509,8 @@ kept_flags() {          # $1=slot it runs in, or empty  $2=conversation id
       m="${m:-${ST_MODEL[$n]}}"; e="${e:-${ST_EFFORT[$n]}}"
     done
   fi
+  [ "$m" = "-" ] && m=""
+  [ "$e" = "-" ] && e=""
   printf '%s\t%s\n' "$m" "$e"
 }
 
@@ -522,9 +524,19 @@ save_state() {
     [ -n "$id" ] || continue
     pid=${PID_OF_SLOT[$n]}
     IFS=$'\t' read -r model effort <<<"$(launch_flags_of_pid "$pid")"
+    model="${model:-$MODEL}" effort="${effort:-$EFFORT}"
+    # A slot on the default stays "-" (follow crew.conf) unless someone set it:
+    # a new conversation, or one already following, that still runs the default.
+    # An explicit value, even one equal to the default, stays explicit.
+    if [ "${ST_ID[$n]:-}" != "$id" ] || [ "${ST_MODEL[$n]:-}" = "-" ]; then
+      [ "$model" = "$MODEL" ] && model="-"
+    fi
+    if [ "${ST_ID[$n]:-}" != "$id" ] || [ "${ST_EFFORT[$n]:-}" = "-" ]; then
+      [ "$effort" = "$EFFORT" ] && effort="-"
+    fi
     ST_ID[$n]="$id"
-    ST_MODEL[$n]="${model:-$MODEL}"
-    ST_EFFORT[$n]="${effort:-$EFFORT}"
+    ST_MODEL[$n]="$model"
+    ST_EFFORT[$n]="$effort"
     ST_TITLE[$n]="$(title_of_slot "$n")"
   done
   # Drop what can no longer be relaunched as saved: a slot beyond SLOTS, a
@@ -549,7 +561,10 @@ status_saved() {
   echo "saved slots (what start and restart launch):"
   local n
   for n in $(printf '%s\n' "${!ST_ID[@]}" | sort -n); do
-    printf '  %-10s %s  %s/%s  %s\n' "$(sess_name "$n")" "${ST_ID[$n]:0:8}" "${ST_MODEL[$n]}" "${ST_EFFORT[$n]}" "${ST_TITLE[$n]:-untitled}"
+    local m="${ST_MODEL[$n]}" e="${ST_EFFORT[$n]}"
+    [ "$m" = "-" ] && m="default($MODEL)"
+    [ "$e" = "-" ] && e="default($EFFORT)"
+    printf '  %-10s %s  %s/%s  %s\n' "$(sess_name "$n")" "${ST_ID[$n]:0:8}" "$m" "$e" "${ST_TITLE[$n]:-untitled}"
   done
   if [ "${#ST_ID[@]}" -eq 0 ]; then echo "  (empty) start launches nothing. start --rerank fills slots by recency."; fi
   return 0
@@ -917,6 +932,8 @@ cmd_start() {
   for row in "${rows[@]}"; do
     IFS=$US read -r want id title model effort <<<"$row"
     [ -n "$id" ] || continue
+    [ "$model" = "-" ] && model=""
+    [ "$effort" = "-" ] && effort=""
     model=${model:-$MODEL}
     effort=${effort:-$EFFORT}
 
@@ -1415,13 +1432,21 @@ relaunch_with() {       # $1=target $2=model-or-empty $3=effort-or-empty
   local id="${CONV_OF_SLOT[$n]:-}" title; title=$(title_of_slot "$n")
   [ -n "$id" ] || die "$(sess_name "$n") holds no resumable conversation"
   local keep_m keep_e; IFS=$'\t' read -r keep_m keep_e < <(kept_flags "$n" "$id")
-  local m="${2:-$keep_m}" e="${3:-$keep_e}"
+  local m="${2:-$keep_m}" e="${3:-$keep_e}" follow_m="" follow_e=""
+  [ "$m" = "default" ] && { m=""; follow_m=1; }
+  [ "$e" = "default" ] && { e=""; follow_e=1; }
   stop_claude_in "$n"
   start_claude_in "$n" "$id" "$title" "$m" "$e"
   sleep 5
   if conv_is_live "$id"; then
     echo "verify: $(sess_name "$n") ($title) live on ${m:-$MODEL}/${e:-$EFFORT}"
     save_state
+    if [ -n "$follow_m$follow_e" ]; then
+      state_read
+      [ -n "$follow_m" ] && ST_MODEL[$n]="-"
+      [ -n "$follow_e" ] && ST_EFFORT[$n]="-"
+      state_write
+    fi
   else
     echo "ERROR: $(sess_name "$n") did not come back up" >&2
     exit 4
@@ -1429,13 +1454,13 @@ relaunch_with() {       # $1=target $2=model-or-empty $3=effort-or-empty
 }
 
 cmd_model() {
-  [ $# -eq 2 ] || die "model: usage: claude-crew model <target> <model>"
+  [ $# -eq 2 ] || die "model: usage: claude-crew model <target> <model|default>"
   relaunch_with "$1" "$2" ""
 }
 
 cmd_effort() {
-  [ $# -eq 2 ] || die "effort: usage: claude-crew effort <target> <low|medium|high|xhigh|max>"
-  case "$2" in low|medium|high|xhigh|max) ;; *) die "effort: must be low|medium|high|xhigh|max" ;; esac
+  [ $# -eq 2 ] || die "effort: usage: claude-crew effort <target> <low|medium|high|xhigh|max|default>"
+  case "$2" in low|medium|high|xhigh|max|default) ;; *) die "effort: must be low|medium|high|xhigh|max|default" ;; esac
   relaunch_with "$1" "" "$2"
 }
 

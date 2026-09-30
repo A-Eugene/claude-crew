@@ -240,8 +240,19 @@ claude-crew model "Web Ko Gedy" sonnet
 claude-crew effort 2 xhigh
 ```
 
-These change one running session only. To change the default for every future
-launch, use `claude-crew setup --model sonnet` and then `claude-crew restart`.
+Each changes only the setting it names. The conversation keeps its other
+setting, and a `switch` carries both to the new slot.
+
+A slot follows the `crew.conf` default until someone sets it. The saved slots
+store `-` for a setting that follows the default, so changing the default with
+`claude-crew setup --model sonnet` reaches every such slot on the next start or
+restart, while a slot set with `model` or `effort` keeps its value. `default`
+hands a setting back:
+
+```
+claude-crew model 2 default
+claude-crew effort 2 default
+```
 
 ## Saved slots
 
