@@ -152,13 +152,20 @@ only when the user has said to interrupt it.
 `restart`, `update` and anything run with `--self` wait up to 15 minutes for a
 busy session to go idle instead. An unsent draft still stops them.
 
-## Project skills
+## Project skills and instructions
 
-Sessions start in the crew's `WORKDIR`, so a project's own skills and
-`CLAUDE.md` never load by themselves. The crew's `local-skills-guard.sh` hook
-names them the first time a session touches that project, and refuses the first
-write there until they are read. When it refuses, read what it lists, then retry.
-Read a project's skills as plain files. The Skill tool cannot see them.
+Sessions start in the crew's `WORKDIR`, so a project's own skills, `CLAUDE.md`
+and `AGENTS.md` never load by themselves, and neither does a `CLAUDE.md` in a
+subfolder. The crew's `local-skills-guard.sh` hook names them the first time a
+session touches that folder, and refuses the first write there until they are
+read. When it refuses, read what it lists, then retry. Read a project's skills as
+plain files. The Skill tool cannot see them.
+
+Project hooks, settings, permissions, commands, agents and MCP servers never run
+in crew sessions. When the hook names some, tell the user. When asked to add a
+rule or check for one project, write a global hook in `~/.claude/settings.json`
+that returns early for paths outside that project, not a project hook. The
+README's "Using it as intended" section has the full split.
 
 ## Clearing a session's context
 

@@ -95,9 +95,12 @@ settings and hooks.
 ```
 
 - **`local-skills-guard.sh`**: every crew session starts in `WORKDIR`, so Claude
-  Code never loads the skills and `CLAUDE.md` of a project below it. The hook
-  names them the first time a session touches that project, and refuses the
-  first write until they have been read.
+  Code never loads the skills, `CLAUDE.md` or `AGENTS.md` of a folder below it.
+  The hook names them the first time a session touches that folder, and refuses
+  the first write there until they have been read. It also names project hooks,
+  settings, commands, agents and MCP servers, which crew sessions do not run.
+  README.md's "Using it as intended" explains where each kind of configuration
+  belongs.
 - **`claude-crew cleared`**: Claude Code's `/clear` keeps the previous
   conversation under the same name. The hook records the new conversation as
   the session's, and has the session ask before the previous one is deleted. To

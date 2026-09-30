@@ -43,6 +43,46 @@ scrollback. Because it is a child of a shell, you can stop and restart claude in
 place and the terminal survives. That is what makes changing a session's model
 or effort cheap rather than destructive.
 
+## Using it as intended
+
+claude-crew works differently from the usual way of running Claude Code, and the
+difference decides where each kind of project configuration belongs.
+
+**The usual way:** you open Claude Code inside a project folder. It then loads
+that folder's `CLAUDE.md`, skills, hooks, settings, commands, agents and MCP
+servers, and it can write only inside that folder and folders you add.
+
+**The crew's way:** every session starts in one parent folder, `WORKDIR` (the
+home directory by default, `/root` on the host this was built for). A session can
+write anywhere below it, so one conversation can work across several projects,
+and a trading session can fix a deploy script without being reopened. The price
+is that Claude Code loads nothing from the projects below `WORKDIR` by itself.
+
+So configuration splits by what it is:
+
+1. **A project's instructions go in its `CLAUDE.md` or `AGENTS.md`.**
+   Conventions, host quirks, how to build and run it. A `CLAUDE.md` in a
+   subfolder works too. The project hook makes a session read each one the first
+   time it works in that folder, before its first write there.
+2. **A project keeps its own skills only when they belong to that project:**
+   version-matched framework skills (the ones `npx skills add` installs), or
+   documentation of that project's own workflows. Anything useful across
+   projects goes in `~/.claude/skills`, where every session sees it. The project
+   hook names a project's skills on first touch, the same way it names
+   instructions.
+3. **Enforcement goes in global hooks that check the path.** A rule for one
+   project becomes a hook in `~/.claude/settings.json` that returns early for any
+   path outside that project. The crew's own hooks work this way.
+4. **Do not write project hooks, settings, permissions, commands, agents or MCP
+   servers for crew sessions.** Claude Code applies them only to a session
+   started in that folder, so crew sessions never run them. A repository that
+   other people open directly may keep them for those people. The project hook
+   names any it finds, so a session can tell you that they do not run.
+
+**Starting a session inside a project** gives you the usual way back for that
+session, at the cost of writing outside the project. `WORKDIR` applies to every
+session, so change it only when every session should start in the same place.
+
 ## Commands
 
 | Command | What it does |
@@ -197,23 +237,26 @@ you script the copy.
 As a Claude Code skill, `SKILL.md` also lets any session drive the crew by
 asking in plain language.
 
-## Project skills
+## Project skills and instructions
 
-Every crew session starts in `WORKDIR`. Claude Code registers skills only from
-the directory a session starts in, so a project below `WORKDIR` never has its own
-`.claude/skills`, `.agents/skills` or `CLAUDE.md` loaded. Bash commands trigger
-no discovery at all, and Edit and Write load nested skills only after the edit
-is issued.
+Every crew session starts in `WORKDIR`, and Claude Code loads skills and
+instructions only from the folder a session starts in and the folders above it.
+A project below `WORKDIR` therefore never has its `.claude/skills`,
+`.agents/skills`, `CLAUDE.md` or `AGENTS.md` loaded. Bash commands trigger no
+discovery at all, and Edit and Write load nested skills only after the edit is
+issued.
 
 `hooks/local-skills-guard.sh` covers this. It is a PreToolUse hook on
-`Edit|Write|Bash`. The first time a session touches a project that ships skills,
-it names the skills and the project's `CLAUDE.md`. The first write into that
-project is refused until they have been read, once per project per session. A
-session started inside the project already has its skills, so the hook leaves it
-alone.
+`Edit|Write|Bash`. The first time a session touches a folder that carries skills
+or instructions, it names them, and the first write into that folder is refused
+until they have been read. This happens once per folder per session, so a
+`CLAUDE.md` in a subfolder is named when the session first reaches that
+subfolder. The hook also names any project hooks, settings, commands, agents and
+MCP servers, because crew sessions do not run them. A session started inside a
+folder already has that folder's configuration, so the hook leaves it alone.
 
-It keeps two markers per session and project, one for the notice and one for
-the refusal. With one shared marker, a first `ls` spends it on a notice that gets
+It keeps two markers per session and folder, one for the notice and one for the
+refusal. With one shared marker, a first `ls` spends it on a notice that gets
 ignored, and the write that follows goes through unread. The Bash test for a
 write matches `rm`, `mv`, `cp`, redirects and `sed -i`, so an unrelated command
 naming a project path can use up the one refusal.

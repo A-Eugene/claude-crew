@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# PreToolUse(Edit|Write|Bash) hook: when a tool first touches a project that ships
-# its own skills, name them and the project's CLAUDE.md, and refuse the first
-# MUTATING call until they have been read.
+# PreToolUse(Edit|Write|Bash) hook: when a tool first touches a folder below
+# WORKDIR that carries its own skills or instructions (CLAUDE.md, AGENTS.md), name
+# them, and refuse the first MUTATING call until they have been read. Project
+# hooks, settings, commands, agents and MCP servers are named as not running.
 #
 # Crew sessions start in WORKDIR (crew.conf), not in a project. Claude Code
 # registers skills from the starting directory only, so a project's own
@@ -10,7 +11,8 @@
 # only after the edit is issued. This hook fires before the tool runs, which is
 # the only point where a version-matched skill still helps.
 #
-# Fires once per session per project. A non-mutating touch gets context. The
+# Fires once per session per folder, so a nested CLAUDE.md is named the first
+# time the session reaches its folder. A non-mutating touch gets context. The
 # first mutating one is denied, so the read happens before the code.
 #
 # Keep two markers per session per project (.ctx for the notice, .deny for the
@@ -51,64 +53,100 @@ def inside(p, root):
     return p == root or p.startswith(root.rstrip("/") + "/")
 
 
-def has_skills(d):
-    return any(os.path.isdir(os.path.join(d, s)) and os.listdir(os.path.join(d, s))
-               for s in (".claude/skills", ".agents/skills"))
+SKILL_DIRS = (".claude/skills", ".agents/skills")
+DOCS = ("CLAUDE.md", "AGENTS.md")
 
 
-def project_of(path):
-    """Nearest directory below the working directory that ships skills."""
+def skills_in(d):
+    return sorted({n for s in SKILL_DIRS if os.path.isdir(os.path.join(d, s))
+                   for n in os.listdir(os.path.join(d, s)) if not n.startswith(".")})
+
+
+def docs_in(d):
+    return [os.path.join(d, f) for f in DOCS if os.path.isfile(os.path.join(d, f))]
+
+
+def not_run_in(d):
+    """Project config that Claude Code loads only for a session started in d."""
+    found = []
+    for f in (".claude/settings.json", ".claude/settings.local.json"):
+        try:
+            keys = json.load(open(os.path.join(d, f)))
+        except Exception:
+            continue
+        found += [f"{k} in {f}" for k in ("hooks", "permissions", "env", "mcpServers") if k in keys]
+    for sub in (".claude/commands", ".claude/agents"):
+        if os.path.isdir(os.path.join(d, sub)) and os.listdir(os.path.join(d, sub)):
+            found.append(sub)
+    if os.path.isfile(os.path.join(d, ".mcp.json")):
+        found.append(".mcp.json")
+    return found
+
+
+def context_dirs(path):
+    """Every folder from the path up to (not including) the working directory
+    that carries skills or instructions, innermost first."""
     p = os.path.realpath(path)
     if not inside(p, workdir) or p == workdir:
-        return None
+        return []
     if not os.path.isdir(p):
         p = os.path.dirname(p)
+    out = []
+    # Claude Code's own config folder holds the user's CLAUDE.md, which every
+    # session already has.
+    if inside(p, os.path.join(home, ".claude")):
+        return []
     while inside(p, workdir) and p not in (workdir, home, "/"):
-        if has_skills(p):
-            return p
+        if skills_in(p) or docs_in(p):
+            out.append(p)
         p = os.path.dirname(p)
-    return None
+    return out
 
 
-proj = next((q for q in map(project_of, paths) if q), None)
-# A session started inside the project already has its skills.
-if not proj or inside(cwd, proj):
+dirs = next((c for c in map(context_dirs, paths) if c), [])
+# A session started inside a folder already has that folder's skills and
+# instructions, and those of every folder above it.
+dirs = [d for d in dirs if not inside(cwd, d)]
+if not dirs:
     sys.exit(0)
-
-names = sorted({n for s in (".claude/skills", ".agents/skills")
-                for n in (os.listdir(os.path.join(proj, s)) if os.path.isdir(os.path.join(proj, s)) else [])
-                if not n.startswith(".")})
 
 mutating = tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") or (
     tool == "Bash" and re.search(r"sed -i| > | >> |\btee |\bcp |\bmv |\brm ", cmd) is not None)
 
 marks = "/tmp/claude-local-skills"
 os.makedirs(marks, exist_ok=True)
-mark = os.path.join(marks, sid + proj.replace("/", "_") + (".deny" if mutating else ".ctx"))
-if os.path.exists(mark):
+fresh = []
+for d in dirs:
+    mark = os.path.join(marks, sid + d.replace("/", "_") + (".deny" if mutating else ".ctx"))
+    if not os.path.exists(mark):
+        open(mark, "w").close()
+        fresh.append(d)
+if not fresh:
     sys.exit(0)
-open(mark, "w").close()
 
-# The repo's root docs carry this project's conventions and host quirks, which
-# no skill knows. A run that read only the skills still proposed `npx prisma`,
-# which is the wrong CLI on this host.
-roots = [f"{proj}/{f}" for f in ("CLAUDE.md", "AGENTS.md") if os.path.isfile(f"{proj}/{f}")]
-md = (f"Read {' and '.join(roots)} first. They carry this repo's conventions and host "
-      f"quirks that no skill knows. ") if roots else ""
-body = (f"{proj} ships its own skills: {', '.join(names)}. {md}"
-        f"The skills are version-matched to THIS repo's dependencies and override what "
-        f"you would otherwise write from memory. Read the ones covering what you are "
-        f"about to touch (cat {proj}/.agents/skills/<name>/SKILL.md, or "
-        f"{proj}/.claude/skills/<name>/SKILL.md), then say which you loaded and which "
-        f"you skipped, by name.")
+parts = []
+for d in reversed(fresh):                      # outermost first, as Claude Code reads them
+    docs, names, extra = docs_in(d), skills_in(d), not_run_in(d)
+    line = f"{d}:"
+    if docs:
+        line += (f" read {' and '.join(docs)}, which {'carry' if len(docs) > 1 else 'carries'} "
+                 f"this folder's conventions and host quirks.")
+    if names:
+        line += (f" It ships its own skills: {', '.join(names)}. They are version-matched to this "
+                 f"repo and override what you would write from memory. Read the ones covering what "
+                 f"you are about to touch (cat {d}/.agents/skills/<name>/SKILL.md or "
+                 f"{d}/.claude/skills/<name>/SKILL.md), then say which you loaded and which you skipped.")
+    if extra:
+        line += (f" It also defines {', '.join(extra)}. Claude Code applies those only to a session "
+                 f"started in that folder, so this session does not run them. Tell the user.")
+    parts.append(line)
+body = "This session started outside the project, so none of this was loaded. " + " ".join(parts)
 out = {"hookEventName": "PreToolUse"}
 if mutating:
     out["permissionDecision"] = "deny"
     out["permissionDecisionReason"] = (
-        body + " This first write is refused so the read happens before the code, not "
-        "after. Reading them afterwards is worthless, because the mistake is already in "
-        "the file. Retry the write once you have read them. This fires only once per "
-        "project per session.")
+        body + " This first write is refused so the reading happens before the change, not "
+        "after. Retry the write once you have read them. This fires once per folder per session.")
 else:
     out["additionalContext"] = body
 print(json.dumps({"hookSpecificOutput": out}))
