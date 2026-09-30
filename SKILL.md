@@ -77,7 +77,7 @@ The same commands are buttons on the web page in `web/`, served on this host at
 first 8 or more characters of one, or a loose match on its title.
 `<conversation>` reaches stopped conversations too. Matching lowercases, ignores
 a leading `[tag]`, and treats punctuation as whitespace, so `pensi`, `Pensi` and
-`[VPS] Pensi` all reach the same conversation, and the words may arrive in any
+`[tag] Pensi` all reach the same conversation, and the words may arrive in any
 order. A name matching more than one is refused with the list of matches, never
 guessed.
 
@@ -325,7 +325,6 @@ safe to edit by hand.
 | `MODEL` | `claude-opus-5-5` | A model ID, or an alias such as `opus`, which resolves to the latest of that family. |
 | `EFFORT` | `medium` | `low` `medium` `high` `xhigh` `max` |
 | `PERMISSION_MODE` | `auto` | |
-| `REMOTE_CONTROL` | `on` | Named after the conversation title. |
 | `AUTOCOMPACT` | `auto` | Passed as `--autocompact`: `auto`, or a window from 100k to 1M tokens. |
 | `TMUX_PREFIX` | `Claude` | Sessions are named `Claude_<short id>`. Letters and digits only. |
 | `SHELL_CMD` | `bash` | The pane process. |

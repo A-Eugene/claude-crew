@@ -175,10 +175,6 @@ def defaults_args(a):
         if a["effort"] not in EFFORTS:
             return None, "Unknown effort."
         args += ["--effort", a["effort"]]
-    if a.get("remote_control") is not None:
-        if a["remote_control"] not in ("on", "off"):
-            return None, "Remote control is on or off."
-        args += ["--remote-control", a["remote_control"]]
     if a.get("permission_mode") is not None:
         if a["permission_mode"] not in PERMISSION_MODES:
             return None, "Unknown permission mode."

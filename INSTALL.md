@@ -50,7 +50,6 @@ This writes `~/.claude/skills/claude-crew/crew.conf` with the defaults:
 | `MODEL` | `claude-opus-5-5` |
 | `EFFORT` | `medium` |
 | `PERMISSION_MODE` | `auto` |
-| `REMOTE_CONTROL` | `on` |
 | `AUTOCOMPACT` | `auto` |
 | `TMUX_PREFIX` | `Claude` |
 

@@ -40,6 +40,12 @@ main { max-width: 720px; margin: 0 auto; padding: 24px 16px 64px; }
 header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; margin-bottom: 32px; }
 header h1 { white-space: nowrap; }
 .hdr-tools { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+@media (max-width: 520px) {
+  header { flex-direction: column; align-items: stretch; gap: 8px; margin-bottom: 24px; }
+  .hdr-tools { margin-left: 0; }
+  .hdr-tools #updated { margin-right: auto; }
+  .hdr-tools button { padding: 0 10px; }
+}
 h1 { font-size: 20px; font-weight: 600; margin: 0; letter-spacing: 0; }
 h2 { font-size: 13px; font-weight: 500; color: var(--text-3); text-transform: uppercase; letter-spacing: .08em; margin: 40px 0 8px; scroll-margin-top: 16px; }
 .muted { color: var(--text-3); font-size: 13px; font-variant-numeric: tabular-nums; }
@@ -120,6 +126,9 @@ dialog::backdrop { background: rgba(0,0,0,.55); }
 #toast.show { opacity: 1; }
 .actions button, .actions .btn { padding: 0 12px; }
 .more { margin-top: 12px; }
+.title.withid { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 8px; white-space: normal; }
+.title.withid .t { min-width: 0; overflow-wrap: anywhere; }
+.idtag { flex: none; font: 400 13px/1 var(--mono); color: var(--text-3); }
 .sechead { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin: 40px 0 8px; }
 .sechead h2 { margin: 0; }
 .alert { border-left: 3px solid var(--text); background: var(--layer); padding: 12px 14px; margin: 0 0 16px; font-size: 14px; }
@@ -193,7 +202,6 @@ textarea { min-height: 120px; resize: vertical; }
       <label for="dWork">Working Directory</label>
       <input id="dWork" name="workdir" type="text" class="mono" autocomplete="off" spellcheck="false" translate="no" placeholder="/home/you…">
     </div>
-    <label class="switch"><input type="checkbox" id="dRemote" name="remote_control"> Remote Control</label>
     <label class="switch"><input type="checkbox" id="dBoot" name="boot"> Start on Boot</label>
     <div class="formfoot">
       <button type="submit" id="saveDefaults">Save Defaults</button>
@@ -230,7 +238,8 @@ const el = (tag, attrs = {}, ...kids) => {
   for (const k of kids.flat()) if (k != null) n.append(k.nodeType ? k : document.createTextNode(k));
   return n;
 };
-const name = (t) => (t || "").replace(/^\[VPS\]\s*/i, "");
+// A leading "[tag] " on a title is shown without the tag.
+const name = (t) => (t || "").replace(/^\[[^\]]*\]\s*/, "");
 const short = (m) => (m || "").replace(/^claude-/, "");
 const rtf = new Intl.RelativeTimeFormat(navigator.languages, { numeric: "auto", style: "narrow" });
 
@@ -366,11 +375,11 @@ function sendPrompt(s) {
 
 function newSession() {
   openDialog(close => {
-    const input = el("input", { type: "text", id: "newTitle", name: "session-title", autocomplete: "off", spellcheck: "false", placeholder: "[VPS] Project Name…", value: "[VPS] " });
+    const input = el("input", { type: "text", id: "newTitle", name: "session-title", autocomplete: "off", spellcheck: "false", placeholder: "Project name…" });
     const go = async (e) => {
       e.preventDefault();
       const title = input.value.trim();
-      if (!title || title === "[VPS]") { toast("Enter a title for the session."); return input.focus(); }
+      if (!title) { toast("Enter a title for the session."); return input.focus(); }
       if (await act({ op: "new", title }, e.submitter || e.currentTarget, "Starting…")) close();
     };
     return [
@@ -426,7 +435,8 @@ function renderSlots() {
   if (!S.sessions.length) return ul.replaceChildren(el("li", { class: "empty" }, "No sessions running."));
   ul.replaceChildren(...S.sessions.map(s => el("li", { class: "row" },
     el("div", { class: "body" },
-      el("div", { class: "title", translate: "no" }, name(s.title) || s.id.slice(0, 8)),
+      s.title ? el("div", { class: "title withid", translate: "no" }, el("span", { class: "t" }, name(s.title)), el("span", { class: "idtag" }, s.id.slice(0, 8)))
+              : el("div", { class: "title", translate: "no" }, s.id.slice(0, 8)),
       metaLine(s)),
     el("div", { class: "actions" },
       s.remote_url ? el("a", { class: "btn", href: s.remote_url, target: "_blank", rel: "noopener", "aria-label": `Open ${s.title} in remote control` }, "Open", el("span", { "aria-hidden": "true" }, " ↗"))
@@ -475,7 +485,6 @@ function renderDefaults() {
   $("dPerm").replaceChildren(...perms.map(p => el("option", { value: p, selected: p === d.permission_mode }, p)));
   $("dAuto").value = d.autocompact;
   $("dWork").value = d.workdir || "";
-  $("dRemote").checked = d.remote_control === "on";
   $("dBoot").checked = S.boot === "on";
   const n = S.sessions.filter(s => s.id && s.follows_default_model && s.follows_default_effort).length;
   $("followNote").textContent = n ? `${n} ${n === 1 ? "session follows" : "sessions follow"} the defaults and ${n === 1 ? "picks" : "pick"} up changes on the next restart.` : "No running session follows the defaults.";
@@ -535,7 +544,7 @@ $("defaultsForm").addEventListener("submit", async (e) => {
   wd.setCustomValidity(wd.value.trim().startsWith("/") ? "" : "Enter an absolute path, such as /home/you.");
   if (!wd.reportValidity()) return wd.focus();
   const payload = { op: "defaults", model: f.get("model"), effort: f.get("effort"), permission_mode: f.get("permission_mode"),
-                    autocompact: auto, remote_control: $("dRemote").checked ? "on" : "off" };
+                    autocompact: auto };
   if (wd.value.trim() !== S.defaults.workdir) payload.workdir = wd.value.trim();
   let ok = await act(payload, $("saveDefaults"), "Saving…");
   const boot = $("dBoot").checked ? "on" : "off";

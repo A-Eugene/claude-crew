@@ -16,14 +16,14 @@ claude-crew status
 ```
 
 ```
-sessions (workdir /root, defaults claude-opus-5-5/medium/auto, remote-control on, autocompact auto):
-  2b599c1a  working      [VPS] VPS Management
-  a069d553  idle         [VPS] Trading Research 2
-  86938387  idle         [VPS] DEPD
+sessions (workdir /root, defaults claude-opus-5-5/medium/auto, autocompact auto):
+  2b599c1a  working      VPS Management
+  a069d553  idle         Trading Research 2
+  86938387  idle         DEPD
 saved (what start and restart bring back):
-  2b599c1a  claude-opus-5-5/high  [VPS] VPS Management
-  a069d553  claude-opus-5-5/high  [VPS] Trading Research 2
-  86938387  default(claude-opus-5-5)/high  [VPS] DEPD
+  2b599c1a  claude-opus-5-5/high  VPS Management
+  a069d553  claude-opus-5-5/high  Trading Research 2
+  86938387  default(claude-opus-5-5)/high  DEPD
 ```
 
 `status` also flags a session that runs a different conversation than its name
@@ -36,6 +36,9 @@ says, and any conversation two sessions hold at once.
 stopping it removes the session. There is no fixed number of sessions and
 nothing sits empty. The window name is the conversation's title, so `tmux ls`
 stays readable, and every command accepts a title as the target.
+
+**Every session runs with remote control**, named after its title, since that is
+how the sessions are meant to be driven. The web page's Open button goes to it.
 
 **A session runs a shell, and claude is typed into that shell.** If claude were
 the pane process, stopping it would delete the tmux session along with its
@@ -111,7 +114,7 @@ session, so change it only when every session should start in the same place.
 8 or more characters of one, or a loose match on its title. `<conversation>`
 reaches stopped conversations too, by id, id prefix or title. Matching
 lowercases, ignores a leading `[tag]`, and treats punctuation as whitespace, so
-`pensi`, `Pensi` and `[VPS] Pensi` all name the same thing, and the words may
+`pensi`, `Pensi` and `[tag] Pensi` all name the same thing, and the words may
 arrive in any order. A name that matches more than one is refused with the list
 of matches, never guessed.
 
@@ -296,7 +299,6 @@ outside the repository. Setting a new password signs every browser out.
 | `MODEL` | `claude-opus-5-5` | A model ID, or an alias such as `opus`, which resolves to the latest of that family. |
 | `EFFORT` | `medium` | `low` `medium` `high` `xhigh` `max` |
 | `PERMISSION_MODE` | `auto` | |
-| `REMOTE_CONTROL` | `on` | Named after the conversation title. |
 | `AUTOCOMPACT` | `auto` | Passed as `--autocompact`: `auto`, or a window from 100k to 1M tokens. |
 | `TMUX_PREFIX` | `Claude` | Sessions are named `Claude_<short id>`. Letters and digits only. |
 | `SHELL_CMD` | `bash` | The pane process. |

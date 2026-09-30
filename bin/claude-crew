@@ -57,7 +57,7 @@
 #                of refusing. --self and restart add it themselves.
 #
 # <target> is a tmux session name, a conversation id or its first 8 characters,
-# or a loose match on a running session's title ("click" finds "[VPS] Click Clack").
+# or a loose match on a running session's title ("click" finds "Click Clack").
 
 set -euo pipefail
 
@@ -94,7 +94,6 @@ WORKDIR="$HOME"
 MODEL=claude-opus-5-5
 EFFORT=medium
 PERMISSION_MODE=auto
-REMOTE_CONTROL=on
 AUTOCOMPACT=auto
 TMUX_PREFIX=Claude
 SHELL_CMD=bash
@@ -103,7 +102,7 @@ SHELL_CMD=bash
 # writes and corrupt it).
 CLAUDE_BIN=claude
 
-CONF_KEYS=(WORKDIR MODEL EFFORT PERMISSION_MODE REMOTE_CONTROL AUTOCOMPACT TMUX_PREFIX SHELL_CMD CLAUDE_BIN)
+CONF_KEYS=(WORKDIR MODEL EFFORT PERMISSION_MODE AUTOCOMPACT TMUX_PREFIX SHELL_CMD CLAUDE_BIN)
 
 # Set by the global --self flag. Lets a caller act on its own session, which is
 # otherwise refused. It does not run inline: see defer_self.
@@ -160,20 +159,9 @@ files = sorted(glob.glob(os.path.join(projdir, "*.jsonl")),
 # Tolerate whitespace after the colon: a transcript written by anything other
 # than Claude Code itself may use json.dumps' default spacing.
 TITLE_RE = re.compile(rb'"customTitle"\s*:\s*"((?:[^"\\]|\\.)*)"')
-# "VPS Claude 4 [Cognee]" -> "Cognee";  "VPS Claude 4" -> ""  (nothing descriptive)
-LEGACY_RE = re.compile(r'^\s*VPS\s+Claude\s*\d+\s*(?:\[(?P<desc>.*)\]\s*)?$', re.I)
-# A "[VPS]" host marker is re-applied to the title on launch. Feeding the marked
-# title back in would stack it ("[VPS] [VPS] Cognee") a little further on every
-# restart, so collapse runs of it to exactly one and keep the user's marker.
-VPS_RE = re.compile(r'^(?:\s*\[VPS\]\s*)+', re.I)
 
 
 def normalise(title):
-    m = LEGACY_RE.match(title)
-    if m:
-        title = (m.group("desc") or "").strip()
-    if VPS_RE.match(title):
-        title = "[VPS] " + VPS_RE.sub("", title).strip()
     return title.strip()
 
 
@@ -672,9 +660,8 @@ claude_cmd() {
   local -a a=("$CLAUDE_BIN" --permission-mode "$PERMISSION_MODE" --model "$model" --effort "$effort"
               --autocompact "$AUTOCOMPACT")
   [ -n "$title" ] && a+=(-n "$title")
-  if [ "$REMOTE_CONTROL" = on ]; then
-    if [ -n "$title" ]; then a+=(--remote-control "$title"); else a+=(--remote-control); fi
-  fi
+  # Every session runs with remote control: it is how the crew's sessions are driven.
+  if [ -n "$title" ]; then a+=(--remote-control "$title"); else a+=(--remote-control); fi
   if [ "${5:-}" = new ]; then a+=(--session-id "$id"); else a+=(--resume "$id"); fi
   printf '%q ' "${a[@]}"
 }
@@ -720,9 +707,7 @@ for window in (1 << 20, size):          # the tail first; titles are re-appended
 if hits:
     try: t = json.loads('"%s"' % hits[-1].decode("utf-8", "replace"))
     except Exception: t = hits[-1].decode("utf-8", "replace")
-    # One "[VPS]" marker, never a stack of them (launch re-applies it).
-    m = re.match(r'^(?:\s*\[VPS\]\s*)+', t, re.I)
-    print(("[VPS] " + t[m.end():].strip()) if m else t.strip())
+    print(t.strip())
 PY2
 }
 
@@ -796,7 +781,7 @@ wait_live() {
 # --- target resolution -------------------------------------------------------
 # Titles carry a host tag and punctuation nobody wants to retype, so matching
 # ignores both: lowercase, drop a leading "[tag] ", and reduce every run of
-# non-alphanumerics to one space. "pensi", "Pensi" and "[VPS] Pensi" then all
+# non-alphanumerics to one space. "pensi", "Pensi" and "[tag] Pensi" then all
 # name the same conversation.
 norm_name() {
   printf '%s' "$1" | tr '[:upper:]' '[:lower:]' |
@@ -877,7 +862,6 @@ cmd_setup() {
       --model)           MODEL="$2"; shift 2 ;;
       --effort)          EFFORT="$2"; shift 2 ;;
       --permission-mode) PERMISSION_MODE="$2"; shift 2 ;;
-      --remote-control)  REMOTE_CONTROL="$2"; shift 2 ;;
       --autocompact)     AUTOCOMPACT="$2"; shift 2 ;;
       --tmux-prefix)     TMUX_PREFIX="$2"; shift 2 ;;
       --shell)           SHELL_CMD="$2"; shift 2 ;;
@@ -893,7 +877,6 @@ cmd_setup() {
   case "$EFFORT" in low|medium|high|xhigh|max) ;; *) die "setup: --effort must be low|medium|high|xhigh|max" ;; esac
   case "$PERMISSION_MODE" in acceptEdits|auto|bypassPermissions|manual|dontAsk|plan) ;;
     *) die "setup: --permission-mode is not a value claude accepts" ;; esac
-  case "$REMOTE_CONTROL" in on|off) ;; *) die "setup: --remote-control must be on or off" ;; esac
   # claude rejects a bad value at launch, which would leave every pane at a bare shell.
   [[ "$AUTOCOMPACT" =~ ^(auto|[0-9]+[kKmM]?)$ ]] || die "setup: --autocompact must be auto or a size from 100k to 1M"
   [[ "$TMUX_PREFIX" =~ ^[A-Za-z][A-Za-z0-9]*$ ]] || die "setup: --tmux-prefix must be letters and digits"
@@ -957,9 +940,9 @@ cmd_status_json() {
   if [ -f "${CREW_UNIT_DIR:-/etc/systemd/system}/claude-crew.service" ]; then boot=on; fi
   for d in ${DUPES[@]+"${DUPES[@]}"}; do dupes+="$d"$'\n'; done
   SESS_TSV="$tsv" SAVED_TSV="$saved" CONVS_TSV="$convs" DUPES_TXT="$dupes" python3 - \
-    "$MODEL" "$EFFORT" "$REMOTE_CONTROL" "$AUTOCOMPACT" "$PERMISSION_MODE" "$boot" "$WORKDIR" <<'PY2'
+    "$MODEL" "$EFFORT" "$AUTOCOMPACT" "$PERMISSION_MODE" "$boot" "$WORKDIR" <<'PY2'
 import json, os, sys
-model, effort, rc, ac, pm, boot, workdir = sys.argv[1:8]
+model, effort, ac, pm, boot, workdir = sys.argv[1:7]
 mem = None
 try:
     for line in open("/proc/meminfo"):
@@ -967,7 +950,7 @@ try:
             mem = int(line.split()[1]) // 1024
 except OSError:
     pass
-out = {"defaults": {"model": model, "effort": effort, "remote_control": rc,
+out = {"defaults": {"model": model, "effort": effort,
                     "autocompact": ac, "permission_mode": pm, "workdir": workdir},
        "boot": boot, "memory_available_mb": mem,
        "sessions": [], "saved_stopped": [], "conversations": [], "duplicates": []}
@@ -991,7 +974,7 @@ PY2
 cmd_status() {
   scan_sessions
   local s id t real n=0
-  echo "sessions (workdir $WORKDIR, defaults $MODEL/$EFFORT/$PERMISSION_MODE, remote-control $REMOTE_CONTROL, autocompact $AUTOCOMPACT):"
+  echo "sessions (workdir $WORKDIR, defaults $MODEL/$EFFORT/$PERMISSION_MODE, autocompact $AUTOCOMPACT):"
   for s in ${SESSIONS[@]+"${SESSIONS[@]}"}; do
     id=${CONV_OF_SESS[$s]:-}; t=$(title_of_sess "$s")
     if [ -z "${PID_OF_SESS[$s]:-}" ]; then
