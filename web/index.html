@@ -46,7 +46,6 @@ h2 { font-size: 13px; font-weight: 500; color: var(--text-3); text-transform: up
 .mono { font-family: var(--mono); font-size: 13px; }
 ul { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
 li.row { display: flex; align-items: center; gap: 12px; min-height: 64px; padding: 10px 0; border-bottom: 1px solid var(--line); }
-.slotno { width: 20px; flex: none; color: var(--text-3); font-family: var(--mono); font-size: 13px; font-variant-numeric: tabular-nums; }
 .body { flex: 1; min-width: 0; }
 .title { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .meta { color: var(--text-2); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -56,7 +55,6 @@ li.row { display: flex; align-items: center; gap: 12px; min-height: 64px; paddin
 .state.working .dot { background: var(--text); border-color: var(--text); animation: pulse 1.4s ease-in-out infinite; }
 .state.needs { color: var(--text); font-weight: 600; }
 .state.needs .dot { background: var(--text); border-color: var(--text); }
-.state.free .dot { border-style: dashed; border-color: var(--text-3); }
 @keyframes pulse { 50% { opacity: .25; } }
 @media (prefers-reduced-motion: reduce) { .state.working .dot { animation: none; } }
 .actions { display: flex; gap: 8px; flex: none; }
@@ -122,6 +120,8 @@ dialog::backdrop { background: rgba(0,0,0,.55); }
 #toast.show { opacity: 1; }
 .actions button, .actions .btn { padding: 0 12px; }
 .more { margin-top: 12px; }
+.sechead { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin: 40px 0 8px; }
+.sechead h2 { margin: 0; }
 .alert { border-left: 3px solid var(--text); background: var(--layer); padding: 12px 14px; margin: 0 0 16px; font-size: 14px; }
 .login { max-width: 360px; margin: 18vh auto 0; padding: 0 16px; display: grid; gap: 20px; }
 .login form { display: grid; gap: 16px; }
@@ -160,7 +160,10 @@ textarea { min-height: 120px; resize: vertical; }
   </header>
 
   <div id="dupes"></div>
-  <h2 id="sessions">Sessions</h2>
+  <div class="sechead">
+    <h2 id="sessions">Sessions</h2>
+    <button type="button" id="newSession">New Session…</button>
+  </div>
   <ul id="slots"></ul>
 
   <h2 id="stopped">Stopped</h2>
@@ -177,10 +180,6 @@ textarea { min-height: 120px; resize: vertical; }
       <div class="seg" role="radiogroup" aria-labelledby="effortLabel" id="dEffort"></div>
     </div>
     <div class="grid2">
-      <div class="field">
-        <label for="dSlots">Slots</label>
-        <input id="dSlots" name="slots" type="number" inputmode="numeric" min="1" max="12" autocomplete="off">
-      </div>
       <div class="field">
         <label for="dPerm">Permission Mode</label>
         <select id="dPerm" name="permission_mode" translate="no"></select>
@@ -204,8 +203,8 @@ textarea { min-height: 120px; resize: vertical; }
   <h2 id="fleet">Fleet</h2>
   <div class="fleet">
     <button class="ghost" type="button" id="startSaved">Start Saved Sessions</button>
-    <button class="ghost" type="button" id="saveSlots">Save Current Sessions</button>
-    <button class="ghost" type="button" id="relabel">Fix Window Labels</button>
+    <button class="ghost" type="button" id="saveSlots">Save Running Sessions</button>
+    <button class="ghost" type="button" id="relabel">Fix Session Names</button>
     <button class="ghost" type="button" id="restartAll">Restart All…</button>
     <button class="ghost" type="button" id="updateClaude">Update Claude Code…</button>
   </div>
@@ -218,7 +217,7 @@ textarea { min-height: 120px; resize: vertical; }
 const MODELS = ["claude-opus-5-5","claude-opus-5","claude-sonnet-5-5","claude-sonnet-5","claude-fable-5-1","claude-haiku-4-5"];
 const PERMS = ["auto","acceptEdits","manual","plan","dontAsk","bypassPermissions"];
 const EFFORTS = ["low","medium","high","xhigh","max"];
-const STATE_LABEL = { working: "Working", idle: "Idle", dialog: "Needs You", draft: "Unsent Draft", free: "Free" };
+const STATE_LABEL = { working: "Working", idle: "Idle", dialog: "Needs You", draft: "Unsent Draft" };
 let S = null, lastUpdated = 0, dirty = false;
 const $ = (id) => document.getElementById(id);
 const el = (tag, attrs = {}, ...kids) => {
@@ -267,12 +266,11 @@ function openDialog(build) {
 }
 
 function stateBadge(s) {
-  const cls = s.state === "working" ? "working" : (s.state === "dialog" || s.state === "draft") ? "needs" : s.state === "free" ? "free" : "idle";
+  const cls = s.state === "working" ? "working" : (s.state === "dialog" || s.state === "draft") ? "needs" : "idle";
   return el("span", { class: "state " + cls }, el("span", { class: "dot", "aria-hidden": "true" }), STATE_LABEL[s.state] || s.state);
 }
 
 function metaLine(s) {
-  if (s.state === "free") return el("div", { class: "meta" }, stateBadge(s));
   const d = S.defaults;
   const model = el("span", { translate: "no" }, short(s.model || d.model));
   const effort = el("span", {}, s.effort || d.effort);
@@ -298,76 +296,28 @@ function confirmBtn(s, label, busyText, payload, close, danger) {
   } }, busy ? `Interrupt & ${label}` : label);
 }
 
-// A checkbox that must be ticked before a pick list acts on a busy session.
-function interruptGate(needed) {
-  if (!needed) return { box: null, ok: () => true };
-  const cb = el("input", { type: "checkbox", id: "intr" });
-  return { box: el("label", { class: "switch" }, cb, "Interrupt the running session"),
-           ok: () => cb.checked || (toast("Tick “Interrupt the running session” first, or wait until it is idle."), false) };
-}
-
-function slotMenu(s) {
-  const others = S.slots.filter(o => o.id && o.slot !== s.slot);
+function sessionMenu(s) {
   openDialog(close => [
-    el("h3", {}, name(s.title) || `Slot ${s.slot}`),
-    el("p", { class: "mono", translate: "no" }, `Claude${s.slot} · ${s.id.slice(0, 8)}`),
+    el("h3", {}, name(s.title) || s.id.slice(0, 8)),
+    el("p", { class: "mono", translate: "no" }, s.id),
     el("div", { class: "menu" },
       el("button", { type: "button", onclick: () => confirmRelaunch(s) }, "Restart…", el("span", { class: "sub" }, "same conversation")),
       el("button", { type: "button", onclick: () => sendPrompt(s) }, "Send Prompt…"),
-      el("button", { type: "button", onclick: () => pickConv(s, close) }, "Replace…", el("span", { class: "sub" }, "with a stopped session")),
-      el("button", { type: "button", disabled: !others.length, onclick: () => pickSwap(s, others, close) }, "Swap…", el("span", { class: "sub" }, "with another slot")),
       el("button", { type: "button", onclick: () => confirmClear(s) }, "Clear Context…", el("span", { class: "sub" }, "deletes this conversation")),
-      el("button", { type: "button", onclick: () => confirmStop(s, close) }, "Stop…", el("span", { class: "sub" }, "keeps the conversation")),
+      el("button", { type: "button", onclick: () => confirmStop(s) }, "Stop…", el("span", { class: "sub" }, "keeps the conversation")),
     ),
     el("div", { class: "foot" }, el("button", { class: "ghost", type: "button", onclick: close }, "Close")),
-  ]);
-}
-
-function pickConv(s, close) {
-  if (!S.conversations.length) return toast("There are no stopped sessions to bring in.");
-  let gate;
-  openDialog(close2 => [
-    el("h3", {}, s ? `Replace “${name(s.title)}”` : "Resume a Session"),
-    s ? busyWarning(s, "Replacing it") : null,
-    (gate = interruptGate(isBusy(s))).box,
-    el("div", { class: "pick" }, S.conversations.map(c =>
-      el("button", { type: "button", onclick: async (e) => {
-        const target = s ? s.slot : (S.slots.find(x => x.state === "free") || {}).slot;
-        if (!target) return toast("There is no free slot. Stop a session or raise Slots in Defaults.");
-        if (!gate.ok()) return;
-        if (await act({ op: "switch", slot: target, conv: c.id, ...(isBusy(s) ? { interrupt: true } : {}) }, e.currentTarget, "Starting…")) close2();
-      } }, el("span", { class: "t" }, name(c.title) || c.id.slice(0, 8)), el("span", { class: "muted mono", translate: "no" }, c.id.slice(0, 8)))
-    )),
-    el("div", { class: "foot" }, el("button", { class: "ghost", type: "button", onclick: close2 }, "Cancel")),
-  ]);
-}
-
-function pickSwap(s, others) {
-  let gate;
-  openDialog(close => [
-    el("h3", {}, `Swap “${name(s.title)}”`),
-    el("p", {}, "Both sessions keep their conversation, model and effort. Only their slots change."),
-    [s, ...others].some(isBusy) ? el("p", { class: "warn" }, "A session that is working, waiting on a prompt or holding a draft loses it when swapped.") : null,
-    (gate = interruptGate([s, ...others].some(isBusy))).box,
-    el("div", { class: "pick" }, others.map(o =>
-      el("button", { type: "button", onclick: async (e) => {
-        const busy = isBusy(s) || isBusy(o);
-        if (busy && !gate.ok()) return;
-        if (await act({ op: "switch", slot: s.slot, conv: o.id, ...(busy ? { interrupt: true } : {}) }, e.currentTarget, "Swapping…")) close();
-      } }, el("span", { class: "t" }, `${o.slot}  ${name(o.title)}`), el("span", { class: "muted" }, STATE_LABEL[o.state]))
-    )),
-    el("div", { class: "foot" }, el("button", { class: "ghost", type: "button", onclick: close }, "Cancel")),
   ]);
 }
 
 function confirmStop(s) {
   openDialog(close => [
     el("h3", {}, `Stop “${name(s.title)}”?`),
-    el("p", {}, "The conversation is kept under Stopped, and you can resume it later."),
+    el("p", {}, "The conversation is kept under Stopped, and you can start it again later."),
     busyWarning(s, "Stopping it"),
     el("div", { class: "foot" },
       el("button", { class: "ghost", type: "button", onclick: close }, "Cancel"),
-      confirmBtn(s, "Stop", "Stopping…", { op: "stop", slot: s.slot }, close)),
+      confirmBtn(s, "Stop", "Stopping…", { op: "stop", session: s.session }, close)),
   ]);
 }
 
@@ -378,19 +328,19 @@ function confirmRelaunch(s) {
     busyWarning(s, "Restarting it"),
     el("div", { class: "foot" },
       el("button", { class: "ghost", type: "button", onclick: close }, "Cancel"),
-      confirmBtn(s, "Restart", "Restarting…", { op: "relaunch", slot: s.slot }, close)),
+      confirmBtn(s, "Restart", "Restarting…", { op: "relaunch", session: s.session }, close)),
   ]);
 }
 
 function confirmClear(s) {
   openDialog(close => [
     el("h3", {}, `Clear “${name(s.title)}”?`),
-    el("p", {}, `The slot restarts on a new, empty conversation with the same name, on ${short(s.model || S.defaults.model)} at ${s.effort || S.defaults.effort} effort. The current conversation and its uploads are deleted. This cannot be undone.`),
+    el("p", {}, `A new, empty conversation starts with the same name, on ${short(s.model || S.defaults.model)} at ${s.effort || S.defaults.effort} effort. The current conversation and its uploads are deleted. This cannot be undone.`),
     el("p", {}, "This is not Claude Code’s /clear, which keeps the old conversation and leaves two sessions with one name."),
     busyWarning(s, "Clearing it"),
     el("div", { class: "foot" },
       el("button", { class: "ghost", type: "button", onclick: close }, "Cancel"),
-      confirmBtn(s, "Clear Context", "Clearing…", { op: "clear", slot: s.slot }, close, true)),
+      confirmBtn(s, "Clear Context", "Clearing…", { op: "clear", session: s.session }, close, true)),
   ]);
 }
 
@@ -403,7 +353,7 @@ function sendPrompt(s) {
       el("form", { style: "display:grid;gap:16px", onsubmit: async (e) => {
           e.preventDefault();
           if (!ta.value.trim()) { toast("Write a prompt first."); return ta.focus(); }
-          if (await act({ op: "prompt", slot: s.slot, text: ta.value }, e.submitter, "Sending…")) close();
+          if (await act({ op: "prompt", session: s.session, text: ta.value }, e.submitter, "Sending…")) close();
         } },
         el("div", { class: "field" }, el("label", { for: "promptText" }, "Prompt"), ta),
         el("p", {}, "Line breaks are sent as spaces."),
@@ -414,17 +364,18 @@ function sendPrompt(s) {
   });
 }
 
-function newSession(s) {
+function newSession() {
   openDialog(close => {
     const input = el("input", { type: "text", id: "newTitle", name: "session-title", autocomplete: "off", spellcheck: "false", placeholder: "[VPS] Project Name…", value: "[VPS] " });
     const go = async (e) => {
       e.preventDefault();
       const title = input.value.trim();
       if (!title || title === "[VPS]") { toast("Enter a title for the session."); return input.focus(); }
-      if (await act({ op: "new", slot: s.slot, title }, e.submitter || e.currentTarget, "Starting…")) close();
+      if (await act({ op: "new", title }, e.submitter || e.currentTarget, "Starting…")) close();
     };
     return [
-      el("h3", {}, `New Session in Slot ${s.slot}`),
+      el("h3", {}, "New Session"),
+      lowMemory(),
       el("form", { onsubmit: go, style: "display:grid;gap:16px" },
         el("div", { class: "field" }, el("label", { for: "newTitle" }, "Title"), input),
         el("p", {}, "It follows the defaults. Change its model or effort later from inside the session."),
@@ -433,6 +384,11 @@ function newSession(s) {
           el("button", { type: "submit" }, "Start Session"))),
     ];
   });
+}
+
+function lowMemory() {
+  const mb = S.memory_available_mb;
+  return mb != null && mb < 700 ? el("p", { class: "warn" }, `Only ${mb} MB of memory is free. Each session needs about 300 MB, so another one may slow the others.`) : null;
 }
 
 function confirmDelete(c) {
@@ -447,7 +403,7 @@ function confirmDelete(c) {
 
 function confirmFleet(kind) {
   const restart = kind === "restart";
-  const busy = S.slots.filter(isBusy).length;
+  const busy = S.sessions.filter(isBusy).length;
   const go = (interrupt, label, busyText, cls) => el("button", { class: cls, type: "button", onclick: async (e) => {
     if (await act({ op: kind, ...(interrupt ? { interrupt: true } : {}) }, e.currentTarget, busyText)) close_();
   } }, label);
@@ -467,39 +423,44 @@ function confirmFleet(kind) {
 
 function renderSlots() {
   const ul = $("slots");
-  ul.replaceChildren(...S.slots.map(s => {
-    const free = s.state === "free";
-    const actions = free ?
-      [el("button", { class: "ghost", type: "button", onclick: () => pickConv(null) , disabled: !S.conversations.length }, "Resume…"),
-       el("button", { type: "button", onclick: () => newSession(s) }, "New Session…")] :
-      [s.remote_url ? el("a", { class: "btn", href: s.remote_url, target: "_blank", rel: "noopener", "aria-label": `Open ${s.title} in remote control` }, "Open", el("span", { "aria-hidden": "true" }, " ↗"))
-                    : el("button", { type: "button", disabled: true, title: "Remote control is not active for this session" }, "Open", el("span", { "aria-hidden": "true" }, " ↗")),
-       el("button", { class: "ghost", type: "button", "aria-label": `More actions for ${s.title}`, onclick: () => slotMenu(s) }, "More…")];
-    return el("li", { class: "row" },
-      el("span", { class: "slotno", "aria-hidden": "true" }, String(s.slot)),
-      el("div", { class: "body" },
-        el("div", { class: "title", translate: "no" }, free ? `Slot ${s.slot}` : (name(s.title) || s.id.slice(0, 8))),
-        metaLine(s)),
-      el("div", { class: "actions" }, actions));
-  }));
+  if (!S.sessions.length) return ul.replaceChildren(el("li", { class: "empty" }, "No sessions running."));
+  ul.replaceChildren(...S.sessions.map(s => el("li", { class: "row" },
+    el("div", { class: "body" },
+      el("div", { class: "title", translate: "no" }, name(s.title) || s.id.slice(0, 8)),
+      metaLine(s)),
+    el("div", { class: "actions" },
+      s.remote_url ? el("a", { class: "btn", href: s.remote_url, target: "_blank", rel: "noopener", "aria-label": `Open ${s.title} in remote control` }, "Open", el("span", { "aria-hidden": "true" }, " ↗"))
+                   : el("button", { type: "button", disabled: true, title: "Remote control is not active for this session" }, "Open", el("span", { "aria-hidden": "true" }, " ↗")),
+      el("button", { class: "ghost", type: "button", "aria-label": `More actions for ${s.title}`, onclick: () => sessionMenu(s) }, "More…")))));
 }
 
 let showAll = false;
 function renderConvs() {
   const ul = $("convs");
   if (!S.conversations.length) return ul.replaceChildren(el("li", { class: "empty" }, "No stopped sessions."));
-  const hasFree = S.slots.some(s => s.state === "free");
+  const saved = new Set((S.saved_stopped || []).map(c => c.id));
   const list = showAll ? S.conversations : S.conversations.slice(0, 6);
   const rest = S.conversations.length - list.length;
   ul.replaceChildren(...list.map(c => el("li", { class: "row" },
     el("div", { class: "body" },
       el("div", { class: "title", translate: "no" }, name(c.title) || "Untitled"),
-      el("div", { class: "meta mono", translate: "no" }, c.id.slice(0, 8))),
+      el("div", { class: "meta" }, el("span", { class: "mono", translate: "no" }, c.id.slice(0, 8)),
+        saved.has(c.id) ? el("span", { class: "dim" }, " · starts on restart") : null)),
     el("div", { class: "actions" },
-      el("button", { class: "ghost", type: "button", disabled: !hasFree, title: hasFree ? null : "No free slot",
-        onclick: async (e) => { const f = S.slots.find(s => s.state === "free"); if (f) await act({ op: "switch", slot: f.slot, conv: c.id }, e.currentTarget, "Starting…"); } }, "Resume"),
+      el("button", { class: "ghost", type: "button", onclick: (e) => startConv(c, e.currentTarget) }, "Start"),
       el("button", { class: "quiet", type: "button", "aria-label": `Delete ${c.title || c.id.slice(0, 8)}`, onclick: () => confirmDelete(c) }, "Delete…")))),
     ...(rest > 0 ? [el("li", {}, el("button", { class: "ghost more", type: "button", onclick: () => { showAll = true; renderConvs(); } }, `Show All (${S.conversations.length})`))] : []));
+}
+
+function startConv(c, btn) {
+  const warn = lowMemory();
+  if (!warn) return act({ op: "resume", conv: c.id }, btn, "Starting…");
+  openDialog(close => [
+    el("h3", {}, `Start “${name(c.title) || c.id.slice(0, 8)}”?`), warn,
+    el("div", { class: "foot" },
+      el("button", { class: "ghost", type: "button", onclick: close }, "Cancel"),
+      el("button", { type: "button", onclick: async (e) => { if (await act({ op: "resume", conv: c.id }, e.currentTarget, "Starting…")) close(); } }, "Start Anyway")),
+  ]);
 }
 
 function renderDefaults() {
@@ -510,14 +471,13 @@ function renderDefaults() {
   sel.replaceChildren(...opts.map(m => el("option", { value: m, selected: m === d.model }, short(m))));
   $("dEffort").replaceChildren(...EFFORTS.map(e => el("label", {},
     el("input", { type: "radio", name: "effort", value: e, checked: e === d.effort }), el("span", {}, e[0].toUpperCase() + e.slice(1)))));
-  $("dSlots").value = d.slots;
   const perms = PERMS.includes(d.permission_mode) ? PERMS : [d.permission_mode, ...PERMS];
   $("dPerm").replaceChildren(...perms.map(p => el("option", { value: p, selected: p === d.permission_mode }, p)));
   $("dAuto").value = d.autocompact;
   $("dWork").value = d.workdir || "";
   $("dRemote").checked = d.remote_control === "on";
   $("dBoot").checked = S.boot === "on";
-  const n = S.slots.filter(s => s.id && s.follows_default_model && s.follows_default_effort).length;
+  const n = S.sessions.filter(s => s.id && s.follows_default_model && s.follows_default_effort).length;
   $("followNote").textContent = n ? `${n} ${n === 1 ? "session follows" : "sessions follow"} the defaults and ${n === 1 ? "picks" : "pick"} up changes on the next restart.` : "No running session follows the defaults.";
 }
 
@@ -529,8 +489,8 @@ function renderUpdated() {
 
 function renderDupes() {
   $("dupes").replaceChildren(...(S.duplicates || []).map(d => {
-    const t = (S.slots.find(s => s.id === d.id) || {}).title;
-    return el("p", { class: "alert", role: "alert" }, `“${name(t) || d.id.slice(0, 8)}” runs in slots ${d.slots[0]} and ${d.slots[1]} at once. Stop one of them.`);
+    const t = (S.sessions.find(s => s.id === d.id) || {}).title;
+    return el("p", { class: "alert", role: "alert" }, `“${name(t) || d.id.slice(0, 8)}” runs in two sessions at once. Stop one of them.`);
   }));
 }
 
@@ -567,10 +527,6 @@ $("defaultsForm").addEventListener("input", () => { dirty = true; });
 $("defaultsForm").addEventListener("submit", async (e) => {
   e.preventDefault();
   const f = new FormData(e.target);
-  const slots = parseInt($("dSlots").value, 10);
-  const sl = $("dSlots");
-  sl.setCustomValidity(slots >= 1 && slots <= 12 ? "" : "Enter a number from 1 to 12.");
-  if (!sl.reportValidity()) return sl.focus();
   const auto = $("dAuto").value.trim();
   const au = $("dAuto");
   au.setCustomValidity(/^(auto|[0-9]+[kKmM]?)$/.test(auto) ? "" : "Enter auto or a size such as 400k.");
@@ -578,7 +534,7 @@ $("defaultsForm").addEventListener("submit", async (e) => {
   const wd = $("dWork");
   wd.setCustomValidity(wd.value.trim().startsWith("/") ? "" : "Enter an absolute path, such as /home/you.");
   if (!wd.reportValidity()) return wd.focus();
-  const payload = { op: "defaults", model: f.get("model"), effort: f.get("effort"), slots, permission_mode: f.get("permission_mode"),
+  const payload = { op: "defaults", model: f.get("model"), effort: f.get("effort"), permission_mode: f.get("permission_mode"),
                     autocompact: auto, remote_control: $("dRemote").checked ? "on" : "off" };
   if (wd.value.trim() !== S.defaults.workdir) payload.workdir = wd.value.trim();
   let ok = await act(payload, $("saveDefaults"), "Saving…");
@@ -593,6 +549,7 @@ $("startSaved").addEventListener("click", (e) => act({ op: "start" }, e.currentT
 $("saveSlots").addEventListener("click", (e) => act({ op: "save" }, e.currentTarget, "Saving…"));
 $("relabel").addEventListener("click", (e) => act({ op: "relabel" }, e.currentTarget, "Fixing…"));
 $("updateClaude").addEventListener("click", () => confirmFleet("update"));
+$("newSession").addEventListener("click", newSession);
 $("dlg").addEventListener("click", (e) => { if (e.target === $("dlg")) $("dlg").close(); });
 
 load(); setInterval(load, 10000); setInterval(renderUpdated, 1000);

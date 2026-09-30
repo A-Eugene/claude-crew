@@ -23,7 +23,7 @@ The rest runs without it.
 ```sh
 git clone https://github.com/A-Eugene/claude-crew.git /tmp/claude-crew
 mkdir -p ~/.claude/skills
-rsync -a --exclude=.git --exclude=crew.conf --exclude=slots.state \
+rsync -a --exclude=.git --exclude=crew.conf --exclude=sessions.state --exclude=slots.state \
   /tmp/claude-crew/ ~/.claude/skills/claude-crew/
 chmod +x ~/.claude/skills/claude-crew/bin/claude-crew ~/.claude/skills/claude-crew/hooks/*.sh
 ln -sf ~/.claude/skills/claude-crew/bin/claude-crew /usr/local/bin/claude-crew
@@ -47,7 +47,6 @@ This writes `~/.claude/skills/claude-crew/crew.conf` with the defaults:
 | Key | Default |
 |---|---|
 | `WORKDIR` | your home directory |
-| `SLOTS` | `5` |
 | `MODEL` | `claude-opus-5-5` |
 | `EFFORT` | `medium` |
 | `PERMISSION_MODE` | `auto` |
@@ -60,13 +59,13 @@ transcript store the crew reads. Set it now if your sessions should start
 somewhere else:
 
 ```sh
-claude-crew setup --workdir /path/to/work --slots 4 --model claude-opus-5-5 --effort high
+claude-crew setup --workdir /path/to/work --model claude-opus-5-5 --effort high
 ```
 
-The crew refuses to change `WORKDIR` later while a slot is running or saved,
+The crew refuses to change `WORKDIR` later while a session is running or saved,
 because a conversation resumes only from the directory it started in.
 
-Check: `claude-crew status` prints one line per slot.
+Check: `claude-crew status` prints the sessions header and "(none running)".
 
 ## 3. Register the hooks
 
@@ -101,24 +100,31 @@ settings and hooks.
   first write until they have been read.
 - **`claude-crew cleared`**: Claude Code's `/clear` keeps the previous
   conversation under the same name. The hook records the new conversation as
-  the slot's, and has the session ask before the previous one is deleted. To
+  the session's, and has the session ask before the previous one is deleted. To
   name the web page in that notice, prefix the command with
   `CREW_WEB_URL=https://crew.example.com `.
 
 Check: `python3 -m json.tool ~/.claude/settings.json` succeeds, and both commands
 appear in it. Sessions pick the hooks up when they next start.
 
-## 4. Start the fleet
+## 4. Start sessions
 
 ```sh
-claude-crew start       # fills the slots from your newest conversations
+claude-crew new "Notes"                 # a brand new conversation
+claude-crew resume "trading research"   # a conversation you already have
 claude-crew status
-claude-crew save        # keeps this set for later starts and restarts
-claude-crew boot on     # optional: start the saved slots after a reboot
+claude-crew boot on     # optional: bring the running set back after a reboot
 ```
 
-Check: `claude-crew status` shows a conversation in each started slot. Attach
-to one with `tmux attach -t Claude1`, and leave with `Ctrl-b d`.
+Every start and stop updates the saved set, so `start` and `restart` bring back
+what was running.
+
+Check: `claude-crew status` lists each started conversation. Attach to one with
+`tmux attach -t Claude_<conversation id>` (`tmux ls` shows the names), and leave
+with `Ctrl-b d`.
+
+A host that ran an earlier version with numbered `Claude1`, `Claude2` …
+sessions renames them with `claude-crew migrate`. The sessions keep running.
 
 ## 5. The web page (optional)
 
@@ -157,13 +163,13 @@ Check: the host name shows a password field, and a wrong password is refused.
 
 ```sh
 git -C /tmp/claude-crew pull
-rsync -a --exclude=.git --exclude=crew.conf --exclude=slots.state \
+rsync -a --exclude=.git --exclude=crew.conf --exclude=sessions.state --exclude=slots.state \
   /tmp/claude-crew/ ~/.claude/skills/claude-crew/
 systemctl restart claude-crew-web    # only if the web page is installed
 ```
 
-`crew.conf` and `slots.state` hold your settings and saved slots. The excludes
-keep them. Never copy over them.
+`crew.conf` and `sessions.state` hold your settings and saved sessions. The
+excludes keep them. Never copy over them.
 
 ## Rules for an AI agent doing this
 

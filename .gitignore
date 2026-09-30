@@ -1,2 +1,5 @@
 crew.conf
 slots.state
+sessions.state
+slots.state.migrated
+__pycache__/

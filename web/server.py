@@ -159,10 +159,10 @@ def refresher():
 def known(kind):
     with _lock:
         d = _state["data"] or {}
-    if kind == "slots":
-        return {s["slot"] for s in d.get("slots", [])}
-    ids = {s["id"] for s in d.get("slots", []) if s.get("id")}
-    return ids | {c["id"] for c in d.get("conversations", [])}
+    if kind == "sessions":
+        return {s["session"] for s in d.get("sessions", [])}
+    ids = {s["id"] for s in d.get("sessions", []) if s.get("id")}
+    return ids | {c["id"] for k in ("conversations", "saved_stopped") for c in d.get(k, [])}
 
 
 def defaults_args(a):
@@ -175,10 +175,6 @@ def defaults_args(a):
         if a["effort"] not in EFFORTS:
             return None, "Unknown effort."
         args += ["--effort", a["effort"]]
-    if a.get("slots") is not None:
-        if not (isinstance(a["slots"], int) and 1 <= a["slots"] <= 12):
-            return None, "Slots must be 1–12."
-        args += ["--slots", str(a["slots"])]
     if a.get("remote_control") is not None:
         if a["remote_control"] not in ("on", "off"):
             return None, "Remote control is on or off."
@@ -203,35 +199,34 @@ def defaults_args(a):
 
 def run_action(a):
     """Returns (exit code, output, message). The message is what the page shows on success."""
-    op, slot, conv = a.get("op"), a.get("slot"), a.get("conv")
+    op, sess, conv = a.get("op"), a.get("session"), a.get("conv")
     # A working session is refused unless the page sent an explicit interrupt.
     pre = ["--interrupt"] if a.get("interrupt") is True else []
 
     def run(*args, **kw):
         return crew(*pre, *args, **kw)
-    if slot is not None and slot not in known("slots"):
-        return 400, "Unknown slot. Refresh and try again.", None
+    if sess is not None and sess not in known("sessions"):
+        return 400, "Unknown session. Refresh and try again.", None
     if conv is not None and conv not in known("convs"):
         return 400, "Unknown conversation. Refresh and try again.", None
-    s = str(slot)
-    if op == "stop" and slot:
-        return (*run("stop", s), "Stopped.")
-    if op == "relaunch" and slot:
-        return (*run("relaunch", s), "Restarted.")
-    if op == "switch" and slot and conv:
-        return (*run("switch", s, conv), "Done.")
-    if op == "new" and slot:
-        title = (a.get("title") or "").strip()
-        if not TITLE_RE.match(title):
-            return 400, "Title needs 1–80 printable characters.", None
-        return (*run("new", title, "--slot", s), "Started.")
-    if op == "clear" and slot:
-        return (*run("clear", s, "--yes"), "Context cleared. The old conversation is deleted.")
-    if op == "prompt" and slot:
+    if op == "stop" and sess:
+        return (*run("stop", sess), "Stopped.")
+    if op == "relaunch" and sess:
+        return (*run("relaunch", sess), "Restarted.")
+    if op == "clear" and sess:
+        return (*run("clear", sess, "--yes"), "Context cleared. The old conversation is deleted.")
+    if op == "prompt" and sess:
         text = (a.get("text") or "").strip()
         if not PROMPT_RE.match(text):
             return 400, "The prompt needs 1–4000 characters.", None
-        return (*run("prompt", s, text), "Sent.")
+        return (*run("prompt", sess, text), "Sent.")
+    if op == "resume" and conv:
+        return (*run("resume", conv), "Started.")
+    if op == "new":
+        title = (a.get("title") or "").strip()
+        if not TITLE_RE.match(title):
+            return 400, "Title needs 1–80 printable characters.", None
+        return (*run("new", title), "Started.")
     if op == "delete" and conv:
         return (*run("delete", conv, "--yes"), "Deleted.")
     if op == "defaults":
@@ -246,7 +241,7 @@ def run_action(a):
     if op == "save":
         return (*run("save"), "Current sessions saved.")
     if op == "relabel":
-        return (*run("relabel"), "Window labels updated.")
+        return (*run("relabel"), "Session names and window labels updated.")
     if op == "restart":
         return (*run("restart"), "Restarting every session in 15 seconds.")
     if op == "update":
@@ -322,7 +317,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self.authed():
             return self.send(401, '{"error":"login"}')
         code, out, msg = run_action(a)
-        print(f"action ip={self.ip()} op={a.get('op')} slot={a.get('slot')} "
+        print(f"action ip={self.ip()} op={a.get('op')} session={a.get('session')} "
               f"conv={a.get('conv')} code={code}", flush=True)
         ok = code == 0
         if ok:
