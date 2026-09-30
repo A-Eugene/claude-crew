@@ -149,8 +149,11 @@ or permission prompt, or holding an unsent draft: `stop`, `relaunch`, `model`,
 one is refused, tell the user which session is busy and why. Pass `--interrupt`
 only when the user has said to interrupt it.
 
-`restart`, `update` and anything run with `--self` wait up to 15 minutes for a
-busy session to go idle instead. An unsent draft still stops them.
+`restart` and `update` refuse while any other running session is not idle, and
+list the busy ones. Your own session is left out, and the scheduled restart
+waits up to 15 minutes for your turn to end. Anything run with `--self` waits
+the same way. An unsent draft still stops them. Do not pass `--interrupt` to
+`restart` or `update` unless the user has said to interrupt the listed sessions.
 
 ## Project skills and instructions
 

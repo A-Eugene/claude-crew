@@ -412,22 +412,19 @@ function confirmDelete(c) {
 
 function confirmFleet(kind) {
   const restart = kind === "restart";
-  const busy = S.sessions.filter(isBusy).length;
-  const go = (interrupt, label, busyText, cls) => el("button", { class: cls, type: "button", onclick: async (e) => {
-    if (await act({ op: kind, ...(interrupt ? { interrupt: true } : {}) }, e.currentTarget, busyText)) close_();
-  } }, label);
-  let close_;
-  openDialog(close => { close_ = close; return [
+  const busy = S.sessions.filter(isBusy);
+  openDialog(close => [
     el("h3", {}, restart ? "Restart All Sessions?" : "Update Claude Code?"),
     el("p", {}, restart ? "Every session stops and resumes its conversation." :
                           "Installs the latest Claude Code, then restarts every session."),
-    busy ? el("p", { class: "warn" }, `${busy} ${busy === 1 ? "session is" : "sessions are"} busy. “When Idle” waits up to 15 minutes for them to finish, and a session holding an unsent draft stops the restart.`) : null,
+    busy.length ? el("p", { class: "warn" }, `Not idle: ${busy.map(s => `${name(s.title) || s.id.slice(0, 8)} (${STATE_LABEL[s.state]})`).join(", ")}. `
+      + `Wait until ${busy.length === 1 ? "it is" : "they are"} idle, or interrupt ${busy.length === 1 ? "it" : "them"}.`) : null,
     el("div", { class: "foot" },
       el("button", { class: "ghost", type: "button", onclick: close }, "Cancel"),
-      busy ? go(true, "Interrupt Now", restart ? "Restarting…" : "Updating…", "danger") : null,
-      go(false, busy ? (restart ? "Restart When Idle" : "Update When Idle") : (restart ? "Restart All" : "Update & Restart"),
-         restart ? "Restarting…" : "Updating…", null)),
-  ]; });
+      el("button", { class: busy.length ? "danger" : null, type: "button", onclick: async (e) => {
+        if (await act({ op: kind, ...(busy.length ? { interrupt: true } : {}) }, e.currentTarget, restart ? "Restarting…" : "Updating…")) close();
+      } }, busy.length ? (restart ? "Interrupt & Restart All" : "Interrupt & Update") : (restart ? "Restart All" : "Update & Restart"))),
+  ]);
 }
 
 function renderSlots() {

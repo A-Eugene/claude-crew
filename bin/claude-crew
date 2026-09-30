@@ -20,7 +20,8 @@
 #                              start every saved session that is not running;
 #                              --force restarts the running ones too
 #   restart [delay]            save what runs, then restart it via systemd
-#                              WITHOUT killing the caller
+#                              WITHOUT killing the caller. Refused while any
+#                              other session is not idle
 #   stop <target>              stop a session and drop it from the saved set
 #   save                       record what runs as the saved set
 #   boot on|off|status         start the saved set automatically after a reboot
@@ -485,6 +486,24 @@ guard_busy() {
   [ "$WAIT_IDLE" = 1 ] && [ "$a" != draft ] && why="$why after 15 minutes of waiting"
   die "$2: $(title_of_sess "$s") ($s) $why. Nothing was done.
      Wait until it is idle, or pass --interrupt to $2 anyway."
+}
+
+# Refuse an operation that stops every session while any of them is not idle:
+# working, waiting on a prompt, or holding an unsent draft. --interrupt
+# overrides. The caller's own session is left out: it is mid-turn by definition,
+# and the scheduled run waits for that turn to end. $1=what was asked
+guard_all() {
+  [ "$INTERRUPT" = 1 ] && return 0
+  local s a busy=()
+  for s in "${!PID_OF_SESS[@]}"; do
+    [ "$s" = "${SELF_SESS:-}" ] && continue
+    a=$(sess_activity "$s")
+    case "$a" in working|dialog|draft) busy+=("$(title_of_sess "$s") ($s): $a") ;; esac
+  done
+  [ "${#busy[@]}" -eq 0 ] && return 0
+  die "$1: ${#busy[@]} session(s) are not idle, so nothing was done:
+$(printf '       %s\n' "${busy[@]}")
+     Try again when they are idle, or pass --interrupt to $1 anyway."
 }
 
 # Is this conversation live in one of our sessions? Rescans first, so it is
@@ -1194,6 +1213,9 @@ cmd_start() {
 # `verify: N/N` line, never the exit code.
 cmd_restart() {
   local delay="${1:-15}" unit="crew-restart-$(date +%s)"
+  scan_sessions
+  detect_self
+  guard_all "restart"
   save_state
   echo "saved what runs to $STATE"
   local when=--wait-idle
@@ -1203,7 +1225,7 @@ cmd_restart() {
     "$CREW_DIR/bin/claude-crew" "$when" start --force
   echo "scheduled $unit in ${delay}s"
   if [ "$when" = --wait-idle ]; then
-    echo "a session still working then is waited on, up to 15 minutes. A session holding an unsent draft stops the restart. --interrupt skips both checks"
+    echo "a session that gets busy before it fires is waited on, up to 15 minutes, never interrupted. An unsent draft stops the restart"
   fi
   echo "verify after it fires:  claude-crew status  &&  journalctl -u $unit | grep verify:"
 }
@@ -1727,6 +1749,9 @@ UNIT
 }
 
 cmd_update() {
+  scan_sessions
+  detect_self
+  guard_all "update"
   echo "current: $("$CLAUDE_BIN" --version)"
   "$CLAUDE_BIN" install latest
   echo "now:     $("$CLAUDE_BIN" --version)"

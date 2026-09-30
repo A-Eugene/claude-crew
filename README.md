@@ -161,15 +161,18 @@ Every command that stops a session checks it first: `stop`, `relaunch`,
 permission prompt, or holding an unsent draft is refused, and nothing is done.
 `--interrupt` acts anyway.
 
-`restart` and `update` wait instead of refusing. At the scheduled time, each
-busy session gets up to 15 minutes to finish its turn. A session still holding
-an unsent draft stops the restart, since waiting will not clear it. A command a
-session aims at itself with `--self` waits the same way, which lets the turn
-that asked for it finish first.
+`restart` and `update` stop every session, so they check every session. If any
+running session is not idle, they refuse and list the busy ones, and `update`
+refuses before it installs anything. The session that runs the command is left
+out of that check, because it is mid-turn by definition. The scheduled restart
+then waits up to 15 minutes for each session to finish its turn, and never
+interrupts one. A session holding an unsent draft stops it, since waiting will
+not clear a draft. A command a session aims at itself with `--self` waits the
+same way, which lets the turn that asked for it finish first.
 
-The web page offers the same choice explicitly: a busy session's dialog shows an
-"Interrupt & …" button, and Restart All offers "Restart When Idle" or
-"Interrupt Now".
+The web page shows the same checks. A busy session's dialog offers only an
+"Interrupt & …" button, and Restart All and Update list the sessions that are
+not idle and offer "Interrupt & Restart All" or "Interrupt & Update".
 
 ## Clearing a session's context
 
