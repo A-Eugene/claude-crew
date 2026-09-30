@@ -822,10 +822,15 @@ cmd_status_json() {
       [ -n "$bridge" ] && url="https://claude.ai/code/$bridge"
       # Dialogs and the input box sit at the bottom; conversation text above
       # them can quote the same words.
-      scr=$(tmux capture-pane -p -J -t "$(sess_name "$n")" 2>/dev/null | grep -v '^\s*$' | tail -8 || true)
+      # The input box draws a no-break space after the prompt mark, and shows a
+      # suggested next prompt as dim text. Only text that is not dim is a draft.
+      local box
+      box=$(tmux capture-pane -p -e -J -t "$(sess_name "$n")" 2>/dev/null | grep '❯' | tail -1 || true)
+      scr=$(tmux capture-pane -p -J -t "$(sess_name "$n")" 2>/dev/null | sed 's/\xc2\xa0/ /g' | grep -v '^\s*$' | tail -8 || true)
+      if [[ "$box" == *$'\e[2m'* ]]; then scr=$(sed 's/^❯ .*/❯/' <<<"$scr"); fi
       if grep -qE 'Enter to (confirm|select|continue)|Esc to cancel' <<<"$scr"; then state=dialog
       elif [ "$busy" = busy ] || grep -q 'esc to interrupt' <<<"$scr"; then state=working
-      elif grep -qE '^❯ .*[^ ]' <<<"$scr"; then state=draft
+      elif grep -qE '^❯ +[^ ]' <<<"$scr"; then state=draft
       else state=idle; fi
     fi
     tsv+="$n"$'\t'"$id"$'\t'"$title"$'\t'"$state"$'\t'"$m"$'\t'"$e"$'\t'"${ST_MODEL[$n]:-}"$'\t'"${ST_EFFORT[$n]:-}"$'\t'"$url"$'\n'
