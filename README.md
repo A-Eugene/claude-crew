@@ -113,9 +113,9 @@ session, so change it only when every session should start in the same place.
 `<target>` is a running session: its tmux name, its conversation id or the first
 8 or more characters of one, or a loose match on its title. `<conversation>`
 reaches stopped conversations too, by id, id prefix or title. Matching
-lowercases, ignores a leading `[tag]`, and treats punctuation as whitespace, so
-`pensi`, `Pensi` and `[tag] Pensi` all name the same thing, and the words may
-arrive in any order. A name that matches more than one is refused with the list
+lowercases, treats punctuation as whitespace, and accepts any part of the title,
+so `pensi` and `Pensi` both reach a conversation titled `[Home] Pensi`, and the
+words may arrive in any order. A name that matches more than one is refused with the list
 of matches, never guessed.
 
 ## `prompt` is a keyboard, not a message bus

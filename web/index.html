@@ -238,8 +238,6 @@ const el = (tag, attrs = {}, ...kids) => {
   for (const k of kids.flat()) if (k != null) n.append(k.nodeType ? k : document.createTextNode(k));
   return n;
 };
-// A leading "[tag] " on a title is shown without the tag.
-const name = (t) => (t || "").replace(/^\[[^\]]*\]\s*/, "");
 const short = (m) => (m || "").replace(/^claude-/, "");
 const rtf = new Intl.RelativeTimeFormat(navigator.languages, { numeric: "auto", style: "narrow" });
 
@@ -340,13 +338,13 @@ function confirmBtn(s, label, busyText, payload, close, danger) {
   const busy = isBusy(s);
   return el("button", { class: busy || danger ? "danger" : null, type: "button", onclick: () => {
     close();
-    run("s:" + s.session, busyText, name(s.title) || s.id.slice(0, 8), { ...payload, ...(busy ? { interrupt: true } : {}) });
+    run("s:" + s.session, busyText, s.title || s.id.slice(0, 8), { ...payload, ...(busy ? { interrupt: true } : {}) });
   } }, busy ? `Interrupt & ${label}` : label);
 }
 
 function sessionMenu(s) {
   openDialog(close => [
-    el("h3", {}, name(s.title) || s.id.slice(0, 8)),
+    el("h3", {}, s.title || s.id.slice(0, 8)),
     el("p", { class: "mono", translate: "no" }, s.id),
     el("div", { class: "menu" },
       el("button", { type: "button", onclick: () => confirmRelaunch(s) }, "Restart…", el("span", { class: "sub" }, "same conversation")),
@@ -360,7 +358,7 @@ function sessionMenu(s) {
 
 function confirmStop(s) {
   openDialog(close => [
-    el("h3", {}, `Stop “${name(s.title)}”?`),
+    el("h3", {}, `Stop “${s.title}”?`),
     el("p", {}, "The conversation is kept under Stopped, and you can start it again later."),
     busyWarning(s, "Stopping it"),
     el("div", { class: "foot" },
@@ -371,7 +369,7 @@ function confirmStop(s) {
 
 function confirmRelaunch(s) {
   openDialog(close => [
-    el("h3", {}, `Restart “${name(s.title)}”?`),
+    el("h3", {}, `Restart “${s.title}”?`),
     el("p", {}, `It resumes the same conversation on ${short(s.model || S.defaults.model)} at ${s.effort || S.defaults.effort} effort.`),
     busyWarning(s, "Restarting it"),
     el("div", { class: "foot" },
@@ -382,7 +380,7 @@ function confirmRelaunch(s) {
 
 function confirmClear(s) {
   openDialog(close => [
-    el("h3", {}, `Clear “${name(s.title)}”?`),
+    el("h3", {}, `Clear “${s.title}”?`),
     el("p", {}, `A new, empty conversation starts with the same name, on ${short(s.model || S.defaults.model)} at ${s.effort || S.defaults.effort} effort. The current conversation and its uploads are deleted. This cannot be undone.`),
     el("p", {}, "This is not Claude Code’s /clear, which keeps the old conversation and leaves two sessions with one name."),
     busyWarning(s, "Clearing it"),
@@ -396,13 +394,13 @@ function sendPrompt(s) {
   openDialog(close => {
     const ta = el("textarea", { id: "promptText", name: "prompt", autocomplete: "off", placeholder: "What should it do next…" });
     return [
-      el("h3", {}, `Send to “${name(s.title)}”`),
+      el("h3", {}, `Send to “${s.title}”`),
       s.state === "working" ? el("p", { class: "warn" }, "This session is working. Wait until it is idle, or the prompt is refused.") : null,
       el("form", { style: "display:grid;gap:16px", onsubmit: async (e) => {
           e.preventDefault();
           if (!ta.value.trim()) { toast("Write a prompt first."); return ta.focus(); }
           close();
-          run("s:" + s.session, "Sending prompt…", name(s.title) || s.id.slice(0, 8), { op: "prompt", session: s.session, text: ta.value });
+          run("s:" + s.session, "Sending prompt…", s.title || s.id.slice(0, 8), { op: "prompt", session: s.session, text: ta.value });
         } },
         el("div", { class: "field" }, el("label", { for: "promptText" }, "Prompt"), ta),
         el("p", {}, "Line breaks are sent as spaces."),
@@ -443,11 +441,11 @@ function lowMemory() {
 
 function confirmDelete(c) {
   openDialog(close => [
-    el("h3", {}, `Delete “${name(c.title) || c.id.slice(0, 8)}”?`),
+    el("h3", {}, `Delete “${c.title || c.id.slice(0, 8)}”?`),
     el("p", {}, "The transcript and its uploads are removed. This cannot be undone."),
     el("div", { class: "foot" },
       el("button", { class: "ghost", type: "button", onclick: close }, "Cancel"),
-      el("button", { class: "danger", type: "button", onclick: () => { close(); run("c:" + c.id, "Deleting…", name(c.title) || c.id.slice(0, 8), { op: "delete", conv: c.id }); } }, "Delete")),
+      el("button", { class: "danger", type: "button", onclick: () => { close(); run("c:" + c.id, "Deleting…", c.title || c.id.slice(0, 8), { op: "delete", conv: c.id }); } }, "Delete")),
   ]);
 }
 
@@ -458,7 +456,7 @@ function confirmFleet(kind) {
     el("h3", {}, restart ? "Restart All Sessions?" : "Update Claude Code?"),
     el("p", {}, restart ? "Every session stops and resumes its conversation." :
                           "Installs the latest Claude Code, then restarts every session."),
-    busy.length ? el("p", { class: "warn" }, `Not idle: ${busy.map(s => `${name(s.title) || s.id.slice(0, 8)} (${STATE_LABEL[s.state]})`).join(", ")}. `
+    busy.length ? el("p", { class: "warn" }, `Not idle: ${busy.map(s => `${s.title || s.id.slice(0, 8)} (${STATE_LABEL[s.state]})`).join(", ")}. `
       + `Wait until ${busy.length === 1 ? "it is" : "they are"} idle, or interrupt ${busy.length === 1 ? "it" : "them"}.`) : null,
     el("div", { class: "foot" },
       el("button", { class: "ghost", type: "button", onclick: close }, "Cancel"),
@@ -476,11 +474,11 @@ function pendingBadge(label) {
 function renderSlots() {
   const ul = $("slots");
   const starting = [...pending].filter(([k]) => k.startsWith("new:")).map(([k, label]) =>
-    el("li", { class: "row" }, el("div", { class: "body" }, el("div", { class: "title", translate: "no" }, name(k.slice(4))), pendingBadge(label))));
+    el("li", { class: "row" }, el("div", { class: "body" }, el("div", { class: "title", translate: "no" }, k.slice(4)), pendingBadge(label))));
   if (!S.sessions.length && !starting.length) return ul.replaceChildren(el("li", { class: "empty" }, "No sessions running."));
   ul.replaceChildren(...starting, ...S.sessions.map(s => { const p = pending.get("s:" + s.session); return el("li", { class: "row" },
     el("div", { class: "body" },
-      s.title ? el("div", { class: "title withid", translate: "no" }, el("span", { class: "t" }, name(s.title)), el("span", { class: "idtag" }, s.id.slice(0, 8)))
+      s.title ? el("div", { class: "title withid", translate: "no" }, el("span", { class: "t" }, s.title), el("span", { class: "idtag" }, s.id.slice(0, 8)))
               : el("div", { class: "title", translate: "no" }, s.id.slice(0, 8)),
       p ? pendingBadge(p) : metaLine(s)),
     el("div", { class: "actions" },
@@ -498,7 +496,7 @@ function renderConvs() {
   const rest = S.conversations.length - list.length;
   ul.replaceChildren(...list.map(c => el("li", { class: "row" },
     el("div", { class: "body" },
-      el("div", { class: "title", translate: "no" }, name(c.title) || "Untitled"),
+      el("div", { class: "title", translate: "no" }, c.title || "Untitled"),
       el("div", { class: "meta" }, el("span", { class: "mono", translate: "no" }, c.id.slice(0, 8)),
         saved.has(c.id) ? el("span", { class: "dim" }, " · starts on restart") : null)),
     el("div", { class: "actions" }, ...(pending.has("c:" + c.id) ? [el("button", { class: "ghost", type: "button", disabled: true }, pending.get("c:" + c.id))] : [
@@ -508,11 +506,11 @@ function renderConvs() {
 }
 
 function startConv(c) {
-  const go = () => run("c:" + c.id, "Starting…", name(c.title) || c.id.slice(0, 8), { op: "resume", conv: c.id });
+  const go = () => run("c:" + c.id, "Starting…", c.title || c.id.slice(0, 8), { op: "resume", conv: c.id });
   const warn = lowMemory();
   if (!warn) return go();
   openDialog(close => [
-    el("h3", {}, `Start “${name(c.title) || c.id.slice(0, 8)}”?`), warn,
+    el("h3", {}, `Start “${c.title || c.id.slice(0, 8)}”?`), warn,
     el("div", { class: "foot" },
       el("button", { class: "ghost", type: "button", onclick: close }, "Cancel"),
       el("button", { type: "button", onclick: () => { close(); go(); } }, "Start Anyway")),
@@ -545,7 +543,7 @@ function renderUpdated() {
 function renderDupes() {
   $("dupes").replaceChildren(...(S.duplicates || []).map(d => {
     const t = (S.sessions.find(s => s.id === d.id) || {}).title;
-    return el("p", { class: "alert", role: "alert" }, `“${name(t) || d.id.slice(0, 8)}” runs in two sessions at once. Stop one of them.`);
+    return el("p", { class: "alert", role: "alert" }, `“${t || d.id.slice(0, 8)}” runs in two sessions at once. Stop one of them.`);
   }));
 }
 

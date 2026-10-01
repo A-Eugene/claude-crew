@@ -75,10 +75,10 @@ The same commands are buttons on the web page in `web/`, served on this host at
 
 `<target>` is a running session: its tmux name, its conversation id or the
 first 8 or more characters of one, or a loose match on its title.
-`<conversation>` reaches stopped conversations too. Matching lowercases, ignores
-a leading `[tag]`, and treats punctuation as whitespace, so `pensi`, `Pensi` and
-`[tag] Pensi` all reach the same conversation, and the words may arrive in any
-order. A name matching more than one is refused with the list of matches, never
+`<conversation>` reaches stopped conversations too. Matching lowercases, treats
+punctuation as whitespace, and accepts any part of the title, so `pensi` and
+`Pensi` both reach a conversation titled `[Home] Pensi`, and the words may arrive
+in any order. A name matching more than one is refused with the list of matches, never
 guessed.
 
 ## Three things this host has already gotten wrong
