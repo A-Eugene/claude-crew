@@ -144,14 +144,17 @@ session, through `claude-crew status` and the unit's journal.
 ## Busy sessions are not interrupted
 
 Commands that stop a session refuse one that is working, waiting on a question
-or permission prompt, or holding an unsent draft: `stop`, `relaunch`, `model`,
+or permission prompt, holding an unsent draft, or `waiting`: between turns with
+a background task of its own still running, such as a monitor or a background
+command, which stopping it would end. This covers `stop`, `relaunch`, `model`,
 `effort`, `clear`, `delete` of a live conversation, and `start --force`. When
 one is refused, tell the user which session is busy and why. Pass `--interrupt`
 only when the user has said to interrupt it.
 
 `restart` and `update` refuse while any other running session is not idle, and
 list the busy ones. Your own session is left out, and the scheduled restart
-waits up to 15 minutes for your turn to end. Anything run with `--self` waits
+waits up to 15 minutes for your turn and every session's background tasks to
+end. Anything run with `--self` waits
 the same way. An unsent draft still stops them. Do not pass `--interrupt` to
 `restart` or `update` unless the user has said to interrupt the listed sessions.
 

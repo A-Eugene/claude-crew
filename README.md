@@ -159,14 +159,17 @@ Every command that stops a session checks it first: `stop`, `relaunch`,
 `model`, `effort`, `clear`, `delete` of a live conversation, and
 `start --force`. A session that is working on a turn, waiting on a question or
 permission prompt, or holding an unsent draft is refused, and nothing is done.
+So is a session in the `waiting` state: between turns, with a background task
+it started still running, such as a monitor or a command run in the background.
+That task is a child of the session's claude, so stopping claude would end it.
 `--interrupt` acts anyway.
 
 `restart` and `update` stop every session, so they check every session. If any
 running session is not idle, they refuse and list the busy ones, and `update`
 refuses before it installs anything. The session that runs the command is left
 out of that check, because it is mid-turn by definition. The scheduled restart
-then waits up to 15 minutes for each session to finish its turn, and never
-interrupts one. A session holding an unsent draft stops it, since waiting will
+then waits up to 15 minutes for each session to finish its turn and its
+background tasks, and never interrupts one. A session holding an unsent draft stops it, since waiting will
 not clear a draft. A command a session aims at itself with `--self` waits the
 same way, which lets the turn that asked for it finish first.
 

@@ -441,9 +441,21 @@ refuse_self() {
      'claude-crew restart' does the same for every session at once."
 }
 
+# Background tool shells a claude process started and still runs: a monitor, or a
+# command run in the background. Each is a child of claude, so stopping claude
+# ends it. MCP servers are children too, but are not tool shells. $1=claude pid
+bg_tasks() {
+  local c n=0
+  for c in $(pgrep -P "$1" 2>/dev/null); do
+    tr '\0' ' ' 2>/dev/null < "/proc/$c/cmdline" | grep -q '/\.claude/shell-snapshots/' && n=$((n + 1))
+  done
+  echo "$n"
+}
+
 # What a session is doing: stopped, idle, working, dialog (a question or
-# permission prompt is waiting) or draft (unsent text in the input box). Call
-# after scan_sessions.
+# permission prompt is waiting), draft (unsent text in the input box) or waiting
+# (between turns, with a background task of its own still running). Call after
+# scan_sessions.
 sess_activity() {       # $1=session
   local s="$1" pid="${PID_OF_SESS[$1]:-}" busy="" box scr
   [ -n "$pid" ] || { echo stopped; return 0; }
@@ -461,31 +473,35 @@ sess_activity() {       # $1=session
     # Past prompts in the conversation carry the same mark as the input box, so
     # read only the box itself.
     box=$(input_box "$s")
-    if [ -n "$box" ] && [ "$box" != "<<no-input-box>>" ]; then echo draft; else echo idle; fi
+    if [ -n "$box" ] && [ "$box" != "<<no-input-box>>" ]; then echo draft
+    elif [ "$(bg_tasks "$pid")" -gt 0 ]; then echo waiting
+    else echo idle; fi
   fi
 }
 
-# Refuse to stop a session that is working, waiting on a prompt, or holding an
-# unsent draft. --interrupt overrides. With --wait-idle, wait up to 15 minutes
-# for a working or prompting session to finish instead. A draft is never waited
-# on, since nothing will clear it. $1=session $2=what was asked
+# Refuse to stop a session that is working, waiting on a prompt, holding an
+# unsent draft, or waiting on a background task of its own. --interrupt
+# overrides. With --wait-idle, wait up to 15 minutes for anything but a draft to
+# finish instead. A draft is never waited on, since nothing will clear it.
+# $1=session $2=what was asked
 guard_busy() {
   [ "$INTERRUPT" = 1 ] && return 0
   local s="$1" a i why
   a=$(sess_activity "$s")
-  if [ "$WAIT_IDLE" = 1 ] && [[ "$a" == working || "$a" == dialog ]]; then
-    echo "waiting for $(title_of_sess "$s") to finish its turn"
+  if [ "$WAIT_IDLE" = 1 ] && [[ "$a" == working || "$a" == dialog || "$a" == waiting ]]; then
+    echo "waiting for $(title_of_sess "$s") to finish its turn and its background tasks"
     for ((i = 0; i < 180; i++)); do
       sleep 5
       scan_sessions
       a=$(sess_activity "$s")
-      [[ "$a" == working || "$a" == dialog ]] || break
+      [[ "$a" == working || "$a" == dialog || "$a" == waiting ]] || break
     done
   fi
   case "$a" in
     working) why="is working on a turn" ;;
     dialog)  why="is waiting on a question or permission prompt" ;;
     draft)   why="has an unsent draft in its input box" ;;
+    waiting) why="is waiting on a background task it started (a monitor or a background command), which stopping it would end" ;;
     *) return 0 ;;
   esac
   [ "$WAIT_IDLE" = 1 ] && [ "$a" != draft ] && why="$why after 15 minutes of waiting"
@@ -494,7 +510,8 @@ guard_busy() {
 }
 
 # Refuse an operation that stops every session while any of them is not idle:
-# working, waiting on a prompt, or holding an unsent draft. --interrupt
+# working, waiting on a prompt, holding an unsent draft, or waiting on a
+# background task of its own. --interrupt
 # overrides. The caller's own session is left out: it is mid-turn by definition,
 # and the scheduled run waits for that turn to end. $1=what was asked
 guard_all() {
@@ -503,7 +520,7 @@ guard_all() {
   for s in "${!PID_OF_SESS[@]}"; do
     [ "$s" = "${SELF_SESS:-}" ] && continue
     a=$(sess_activity "$s")
-    case "$a" in working|dialog|draft) busy+=("$(title_of_sess "$s") ($s): $a") ;; esac
+    case "$a" in working|dialog|draft|waiting) busy+=("$(title_of_sess "$s") ($s): $a") ;; esac
   done
   [ "${#busy[@]}" -eq 0 ] && return 0
   die "$1: ${#busy[@]} session(s) are not idle, so nothing was done:

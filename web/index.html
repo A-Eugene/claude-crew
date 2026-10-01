@@ -225,7 +225,7 @@ textarea { min-height: 120px; resize: vertical; }
 const MODELS = ["claude-opus-5-5","claude-opus-5","claude-sonnet-5-5","claude-sonnet-5","claude-fable-5-1","claude-haiku-4-5"];
 const PERMS = ["auto","acceptEdits","manual","plan","dontAsk","bypassPermissions"];
 const EFFORTS = ["low","medium","high","xhigh","max"];
-const STATE_LABEL = { working: "Working", idle: "Idle", dialog: "Needs You", draft: "Unsent Draft" };
+const STATE_LABEL = { working: "Working", idle: "Idle", dialog: "Needs You", draft: "Unsent Draft", waiting: "Background Task" };
 let S = null, lastUpdated = 0, dirty = false;
 const $ = (id) => document.getElementById(id);
 const el = (tag, attrs = {}, ...kids) => {
@@ -311,7 +311,7 @@ function openDialog(build) {
 }
 
 function stateBadge(s) {
-  const cls = s.state === "working" ? "working" : (s.state === "dialog" || s.state === "draft") ? "needs" : "idle";
+  const cls = (s.state === "working" || s.state === "waiting") ? "working" : (s.state === "dialog" || s.state === "draft") ? "needs" : "idle";
   return el("span", { class: "state " + cls }, el("span", { class: "dot", "aria-hidden": "true" }), STATE_LABEL[s.state] || s.state);
 }
 
@@ -323,13 +323,14 @@ function metaLine(s) {
   return el("div", { class: "meta" }, stateBadge(s), el("span", { class: "dim" }, " · "), model, el("span", { class: "dim" }, " · "), effort, follows);
 }
 
-const BUSY = ["working", "dialog", "draft"];
+const BUSY = ["working", "dialog", "draft", "waiting"];
 const isBusy = (s) => s && BUSY.includes(s.state);
 
 function busyWarning(s, verb) {
   return s.state === "working" ? el("p", { class: "warn" }, `This session is working. ${verb} ends its current answer.`) :
          s.state === "dialog" ? el("p", { class: "warn" }, `This session is waiting on a question or permission prompt. ${verb} cancels it.`) :
-         s.state === "draft" ? el("p", { class: "warn" }, `This session has an unsent draft. ${verb} discards it.`) : null;
+         s.state === "draft" ? el("p", { class: "warn" }, `This session has an unsent draft. ${verb} discards it.`) :
+         s.state === "waiting" ? el("p", { class: "warn" }, `This session is waiting on a background task it started. ${verb} ends that task.`) : null;
 }
 
 // The primary button of a confirm dialog. A busy session gets a red
