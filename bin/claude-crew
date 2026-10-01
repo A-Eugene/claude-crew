@@ -151,7 +151,7 @@ new_uuid() { python3 -c 'import uuid; print(uuid.uuid4())'; }
 # last one is near EOF, and some transcripts are over 100 MB.
 list_convs() {
   python3 - "$(projdir)" "${1:-25}" <<'PY'
-import json, os, re, sys, glob
+import datetime, json, os, re, sys, glob
 
 projdir, limit = sys.argv[1], int(sys.argv[2])
 files = sorted(glob.glob(os.path.join(projdir, "*.jsonl")),
@@ -251,7 +251,12 @@ for path in files[: max(4 * limit, 20)]:
     # sessions that `resume`, `delete` and `clear` cannot address by name.
     if not resumable(path) and not title:
         continue
-    cands.append((last_user_ts(path) or "", os.path.getmtime(path), path, title))
+    # Rank by the later of the last human turn and the last write. A
+    # conversation stopped before anyone typed in it has no human turn, and
+    # ranking it by that alone would put it at the very bottom.
+    mtime = os.path.getmtime(path)
+    written = datetime.datetime.fromtimestamp(mtime, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    cands.append((max(last_user_ts(path) or "", written), mtime, path, title))
 
 cands.sort(key=lambda c: (c[0], c[1]), reverse=True)
 for _ts, _mt, path, title in cands[:limit]:
@@ -571,6 +576,20 @@ state_put() {           # $1=id $2=model $3=effort $4=title
   ST_MODEL[$1]="$2"; ST_EFFORT[$1]="$3"; ST_TITLE[$1]="$4"
 }
 
+# Several crew commands can run at once, for example two actions from the web
+# page. Each reads the saved set, changes it, and writes it back, so hold this
+# lock from the read to the write or one command overwrites the other's change.
+# Re-entrant within one process: save_state can run inside a locked section.
+STATE_LOCK_DEPTH=0
+state_lock() {
+  if [ "$STATE_LOCK_DEPTH" -eq 0 ]; then exec 9>>"$STATE.lock"; flock -x 9; fi
+  STATE_LOCK_DEPTH=$((STATE_LOCK_DEPTH + 1))
+}
+state_unlock() {
+  STATE_LOCK_DEPTH=$((STATE_LOCK_DEPTH - 1))
+  if [ "$STATE_LOCK_DEPTH" -eq 0 ]; then flock -u 9; exec 9>&-; fi
+}
+
 state_drop() {          # $1=id
   unset "ST_MODEL[$1]" "ST_EFFORT[$1]" "ST_TITLE[$1]"
 }
@@ -607,6 +626,7 @@ kept_flags() {          # $1=session it runs in, or empty  $2=conversation id  [
 
 # Merge what is running now into the saved set and write it.
 save_state() {
+  state_lock
   state_read
   scan_sessions
   local s id model effort pd
@@ -633,6 +653,7 @@ save_state() {
     [ -f "$pd/$id.jsonl" ] || [ -n "${SESS_OF_CONV[$id]:-}" ] || state_drop "$id"
   done
   state_write
+  state_unlock
 }
 
 status_saved() {
@@ -1089,7 +1110,7 @@ cmd_migrate() {
     renamed=$((renamed + 1))
   done
   if [ ! -f "$STATE" ] && [ -f "$LEGACY_STATE" ]; then
-    state_read; state_write
+    state_lock; state_read; state_write; state_unlock
     mv -f "$LEGACY_STATE" "$LEGACY_STATE.migrated"
     echo "  saved set moved to $STATE"
   fi
@@ -1326,6 +1347,7 @@ cmd_clear() {
   printf 'verify: %s runs new conversation %s (pid %s)\n' "$ns" "$new" "$pid"
 
   # Carry the old entry's model and effort, "-" included, over to the new one.
+  state_lock
   state_read
   state_drop "$old"
   local nm="${sm:-${m:-$MODEL}}" ne="${se:-${e:-$EFFORT}}"
@@ -1333,6 +1355,7 @@ cmd_clear() {
   [ -z "$se" ] && [ "$ne" = "$EFFORT" ] && ne="-"
   state_put "$new" "$nm" "$ne" "$title"
   state_write
+  state_unlock
 
   if [ -f "$pd/$old.jsonl" ]; then
     cmd_delete "$old" --yes
@@ -1363,11 +1386,12 @@ except Exception: print("")' 2>/dev/null) || new=""
   local short="" old="" id
   [[ "$s" =~ ^${TMUX_PREFIX}_([0-9a-f-]+)$ ]] && short="${BASH_REMATCH[1]}"
   [ -n "$short" ] || return 0
+  state_lock
   state_read
   for id in ${ST_ORDER[@]+"${ST_ORDER[@]}"}; do
     [[ "$id" == "$short"* ]] && [ -n "${ST_MODEL[$id]+x}" ] && old="$id"
   done
-  [[ "$old" =~ $UUID_RE ]] && [ "$old" != "$new" ] || return 0
+  [[ "$old" =~ $UUID_RE ]] && [ "$old" != "$new" ] || { state_unlock; return 0; }
   local want; want=$(sess_of_conv "$new")
   tmux has-session -t "=$want" 2>/dev/null || tmux rename-session -t "=$s" "$want"
   local title="${ST_TITLE[$old]:-$(title_of_sess "$want")}"
@@ -1376,6 +1400,7 @@ except Exception: print("")' 2>/dev/null) || new=""
     state_drop "$old"
     state_write
   fi
+  state_unlock
   [ -f "$(projdir)/$old.jsonl" ] || return 0
   cat <<NOTICE
 claude-crew: the user just ran Claude Code's built-in /clear.
@@ -1516,7 +1541,7 @@ cmd_delete() {
   fi
   rm -rf -- "$HOME/.claude/session-env/$id"
   echo "deleted $id (${title:-untitled})"
-  state_read; state_drop "$id"; state_write
+  state_lock; state_read; state_drop "$id"; state_write; state_unlock
 }
 
 # What is currently sitting in a session's input box.
@@ -1640,10 +1665,12 @@ relaunch_with() {       # $1=target $2=model-or-empty $3=effort-or-empty [$4=wha
     echo "verify: $s ($title) live on ${m:-$MODEL}/${e:-$EFFORT}"
     save_state
     if [ -n "$follow_m$follow_e" ]; then
+      state_lock
       state_read
       [ -n "$follow_m" ] && ST_MODEL[$id]="-"
       [ -n "$follow_e" ] && ST_EFFORT[$id]="-"
       state_write
+      state_unlock
     fi
   else
     echo "ERROR: $s did not come back up" >&2
@@ -1683,7 +1710,7 @@ cmd_stop() {
   local id="${CONV_OF_SESS[$s]:-}" title; title=$(title_of_sess "$s")
   echo "stopping ${title:-untitled} ($s)"
   close_sess "$s"
-  if [ -n "$id" ]; then state_read; state_drop "$id"; state_write; fi
+  if [ -n "$id" ]; then state_lock; state_read; state_drop "$id"; state_write; state_unlock; fi
   echo "stopped${id:+. Transcript $id is kept, and claude-crew resume brings it back}"
 }
 

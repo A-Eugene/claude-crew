@@ -136,11 +136,16 @@ def crew(*args, timeout=180):
 
 
 def refresh():
+    # Refreshes overlap when several actions finish close together. Keep a
+    # snapshot only if its status run started after the one already cached, so
+    # a slower, older run cannot put back what a newer one saw removed.
+    started = time.time()
     code, out = crew("status", "--json", timeout=120)
     data = json.loads(out.splitlines()[-1]) if code == 0 else None
     with _lock:
         if data is not None:
-            _state.update(data=data, updated=time.time(), error=None)
+            if started >= _state.get("started", 0):
+                _state.update(data=data, updated=time.time(), started=started, error=None)
         else:
             _state["error"] = out[-300:]
 

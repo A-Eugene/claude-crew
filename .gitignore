@@ -3,3 +3,4 @@ slots.state
 sessions.state
 slots.state.migrated
 __pycache__/
+sessions.state.lock

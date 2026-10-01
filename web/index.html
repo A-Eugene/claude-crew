@@ -269,6 +269,44 @@ async function act(payload, busyBtn, busyText) {
   }
 }
 
+// Actions in progress, keyed by what they act on: "s:<session>", "c:<conversation>",
+// "new:<title>" or "fleet:<op>". Rows read this on every render, so a refresh
+// keeps showing "Stopping…" until the action has finished.
+const pending = new Map();
+
+// Run an action without waiting for it: the row shows `label` until the server
+// answers, then a toast names `who` and the result.
+function run(key, label, who, payload) {
+  if (pending.has(key)) return;
+  pending.set(key, label);
+  renderLists(true);
+  post("/api/action", payload).then(async (r) => {
+    if (r.status === 401) return showLogin();
+    const j = await r.json().catch(() => ({ ok: false, output: "The server sent no readable reply." }));
+    const last = (j.output || "").split("\n").filter(Boolean).slice(-2).join("\n").replace(/^crew: /, "");
+    toast(`${who}: ${j.ok ? (j.message || "Done.") : (last || "Failed. Check the server log.")}`);
+  }).catch(() => toast(`${who}: could not reach the server.`))
+    .finally(() => { pending.delete(key); load(); });
+}
+
+// A redraw replaces every button in the lists. One that lands between a
+// press and its release swallows the click, so hold redraws while a pointer
+// is down, and skip them when nothing on screen would change.
+let pointerDown = false, redrawQueued = false, lastSig = "";
+document.addEventListener("pointerdown", () => { pointerDown = true; }, true);
+const releasePointer = () => { pointerDown = false; if (redrawQueued) { redrawQueued = false; renderLists(); } };
+document.addEventListener("pointerup", releasePointer, true);
+document.addEventListener("pointercancel", releasePointer, true);
+
+function renderLists(force) {
+  if (!S) return;
+  if (pointerDown) { redrawQueued = true; return; }
+  const sig = JSON.stringify([S.sessions, S.conversations, S.saved_stopped, S.duplicates, showAll, [...pending]]);
+  if (!force && sig === lastSig) return;
+  lastSig = sig;
+  renderDupes(); renderSlots(); renderConvs();
+}
+
 function openDialog(build) {
   const d = $("dlg"), b = $("dlgBody"); b.replaceChildren(...build(() => d.close()).flat().filter(n => n != null));
   d.showModal();
@@ -300,8 +338,9 @@ function busyWarning(s, verb) {
 // "Interrupt & …" button that sends the interrupt flag; otherwise the plain one.
 function confirmBtn(s, label, busyText, payload, close, danger) {
   const busy = isBusy(s);
-  return el("button", { class: busy || danger ? "danger" : null, type: "button", onclick: async (e) => {
-    if (await act({ ...payload, ...(busy ? { interrupt: true } : {}) }, e.currentTarget, busyText)) close();
+  return el("button", { class: busy || danger ? "danger" : null, type: "button", onclick: () => {
+    close();
+    run("s:" + s.session, busyText, name(s.title) || s.id.slice(0, 8), { ...payload, ...(busy ? { interrupt: true } : {}) });
   } }, busy ? `Interrupt & ${label}` : label);
 }
 
@@ -362,7 +401,8 @@ function sendPrompt(s) {
       el("form", { style: "display:grid;gap:16px", onsubmit: async (e) => {
           e.preventDefault();
           if (!ta.value.trim()) { toast("Write a prompt first."); return ta.focus(); }
-          if (await act({ op: "prompt", session: s.session, text: ta.value }, e.submitter, "Sending…")) close();
+          close();
+          run("s:" + s.session, "Sending prompt…", name(s.title) || s.id.slice(0, 8), { op: "prompt", session: s.session, text: ta.value });
         } },
         el("div", { class: "field" }, el("label", { for: "promptText" }, "Prompt"), ta),
         el("p", {}, "Line breaks are sent as spaces."),
@@ -380,7 +420,8 @@ function newSession() {
       e.preventDefault();
       const title = input.value.trim();
       if (!title) { toast("Enter a title for the session."); return input.focus(); }
-      if (await act({ op: "new", title }, e.submitter || e.currentTarget, "Starting…")) close();
+      close();
+      run("new:" + title, "Starting…", title, { op: "new", title });
     };
     return [
       el("h3", {}, "New Session"),
@@ -406,7 +447,7 @@ function confirmDelete(c) {
     el("p", {}, "The transcript and its uploads are removed. This cannot be undone."),
     el("div", { class: "foot" },
       el("button", { class: "ghost", type: "button", onclick: close }, "Cancel"),
-      el("button", { class: "danger", type: "button", onclick: async (e) => { if (await act({ op: "delete", conv: c.id }, e.currentTarget, "Deleting…")) close(); } }, "Delete")),
+      el("button", { class: "danger", type: "button", onclick: () => { close(); run("c:" + c.id, "Deleting…", name(c.title) || c.id.slice(0, 8), { op: "delete", conv: c.id }); } }, "Delete")),
   ]);
 }
 
@@ -421,24 +462,31 @@ function confirmFleet(kind) {
       + `Wait until ${busy.length === 1 ? "it is" : "they are"} idle, or interrupt ${busy.length === 1 ? "it" : "them"}.`) : null,
     el("div", { class: "foot" },
       el("button", { class: "ghost", type: "button", onclick: close }, "Cancel"),
-      el("button", { class: busy.length ? "danger" : null, type: "button", onclick: async (e) => {
-        if (await act({ op: kind, ...(busy.length ? { interrupt: true } : {}) }, e.currentTarget, restart ? "Restarting…" : "Updating…")) close();
+      el("button", { class: busy.length ? "danger" : null, type: "button", onclick: () => {
+        close();
+        run("fleet:" + kind, restart ? "Restarting…" : "Updating…", restart ? "Restart All" : "Update", { op: kind, ...(busy.length ? { interrupt: true } : {}) });
       } }, busy.length ? (restart ? "Interrupt & Restart All" : "Interrupt & Update") : (restart ? "Restart All" : "Update & Restart"))),
   ]);
 }
 
+function pendingBadge(label) {
+  return el("div", { class: "meta" }, el("span", { class: "state working" }, el("span", { class: "dot", "aria-hidden": "true" }), label));
+}
+
 function renderSlots() {
   const ul = $("slots");
-  if (!S.sessions.length) return ul.replaceChildren(el("li", { class: "empty" }, "No sessions running."));
-  ul.replaceChildren(...S.sessions.map(s => el("li", { class: "row" },
+  const starting = [...pending].filter(([k]) => k.startsWith("new:")).map(([k, label]) =>
+    el("li", { class: "row" }, el("div", { class: "body" }, el("div", { class: "title", translate: "no" }, name(k.slice(4))), pendingBadge(label))));
+  if (!S.sessions.length && !starting.length) return ul.replaceChildren(el("li", { class: "empty" }, "No sessions running."));
+  ul.replaceChildren(...starting, ...S.sessions.map(s => { const p = pending.get("s:" + s.session); return el("li", { class: "row" },
     el("div", { class: "body" },
       s.title ? el("div", { class: "title withid", translate: "no" }, el("span", { class: "t" }, name(s.title)), el("span", { class: "idtag" }, s.id.slice(0, 8)))
               : el("div", { class: "title", translate: "no" }, s.id.slice(0, 8)),
-      metaLine(s)),
+      p ? pendingBadge(p) : metaLine(s)),
     el("div", { class: "actions" },
       s.remote_url ? el("a", { class: "btn", href: s.remote_url, target: "_blank", rel: "noopener", "aria-label": `Open ${s.title} in remote control` }, "Open", el("span", { "aria-hidden": "true" }, " ↗"))
                    : el("button", { type: "button", disabled: true, title: "Remote control is not active for this session" }, "Open", el("span", { "aria-hidden": "true" }, " ↗")),
-      el("button", { class: "ghost", type: "button", "aria-label": `More actions for ${s.title}`, onclick: () => sessionMenu(s) }, "More…")))));
+      el("button", { class: "ghost", type: "button", disabled: !!p, "aria-label": `More actions for ${s.title}`, onclick: () => sessionMenu(s) }, "More…"))); }));
 }
 
 let showAll = false;
@@ -453,20 +501,21 @@ function renderConvs() {
       el("div", { class: "title", translate: "no" }, name(c.title) || "Untitled"),
       el("div", { class: "meta" }, el("span", { class: "mono", translate: "no" }, c.id.slice(0, 8)),
         saved.has(c.id) ? el("span", { class: "dim" }, " · starts on restart") : null)),
-    el("div", { class: "actions" },
-      el("button", { class: "ghost", type: "button", onclick: (e) => startConv(c, e.currentTarget) }, "Start"),
-      el("button", { class: "quiet", type: "button", "aria-label": `Delete ${c.title || c.id.slice(0, 8)}`, onclick: () => confirmDelete(c) }, "Delete…")))),
-    ...(rest > 0 ? [el("li", {}, el("button", { class: "ghost more", type: "button", onclick: () => { showAll = true; renderConvs(); } }, `Show All (${S.conversations.length})`))] : []));
+    el("div", { class: "actions" }, ...(pending.has("c:" + c.id) ? [el("button", { class: "ghost", type: "button", disabled: true }, pending.get("c:" + c.id))] : [
+      el("button", { class: "ghost", type: "button", onclick: () => startConv(c) }, "Start"),
+      el("button", { class: "quiet", type: "button", "aria-label": `Delete ${c.title || c.id.slice(0, 8)}`, onclick: () => confirmDelete(c) }, "Delete…")])))),
+    ...(rest > 0 ? [el("li", {}, el("button", { class: "ghost more", type: "button", onclick: () => { showAll = true; renderLists(true); } }, `Show All (${S.conversations.length})`))] : []));
 }
 
-function startConv(c, btn) {
+function startConv(c) {
+  const go = () => run("c:" + c.id, "Starting…", name(c.title) || c.id.slice(0, 8), { op: "resume", conv: c.id });
   const warn = lowMemory();
-  if (!warn) return act({ op: "resume", conv: c.id }, btn, "Starting…");
+  if (!warn) return go();
   openDialog(close => [
     el("h3", {}, `Start “${name(c.title) || c.id.slice(0, 8)}”?`), warn,
     el("div", { class: "foot" },
       el("button", { class: "ghost", type: "button", onclick: close }, "Cancel"),
-      el("button", { type: "button", onclick: async (e) => { if (await act({ op: "resume", conv: c.id }, e.currentTarget, "Starting…")) close(); } }, "Start Anyway")),
+      el("button", { type: "button", onclick: () => { close(); go(); } }, "Start Anyway")),
   ]);
 }
 
@@ -513,7 +562,7 @@ async function load() {
     $("login").hidden = true; $("app").hidden = false;
     if (!j.data) { $("updated").textContent = j.error ? "Status failed. Retrying…" : "Loading…"; return; }
     S = j.data; lastUpdated = j.updated;
-    renderDupes(); renderSlots(); renderConvs(); renderDefaults(); renderUpdated();
+    renderLists(); renderDefaults(); renderUpdated();
   } catch { $("updated").textContent = "Offline. Retrying…"; }
 }
 
@@ -551,9 +600,16 @@ $("defaultsForm").addEventListener("submit", async (e) => {
 window.addEventListener("beforeunload", (e) => { if (dirty) { e.preventDefault(); e.returnValue = ""; } });
 $("refresh").addEventListener("click", load);
 $("restartAll").addEventListener("click", () => confirmFleet("restart"));
-$("startSaved").addEventListener("click", (e) => act({ op: "start" }, e.currentTarget, "Starting…"));
-$("saveSlots").addEventListener("click", (e) => act({ op: "save" }, e.currentTarget, "Saving…"));
-$("relabel").addEventListener("click", (e) => act({ op: "relabel" }, e.currentTarget, "Fixing…"));
+// Static buttons outside the lists: disable this one until its action is done.
+function runButton(btn, key, label, who, payload) {
+  if (pending.has(key)) return;
+  const text = btn.textContent; btn.disabled = true; btn.textContent = label;
+  run(key, label, who, payload);
+  const t = setInterval(() => { if (!pending.has(key)) { clearInterval(t); btn.disabled = false; btn.textContent = text; } }, 300);
+}
+$("startSaved").addEventListener("click", (e) => runButton(e.currentTarget, "fleet:start", "Starting…", "Start Saved Sessions", { op: "start" }));
+$("saveSlots").addEventListener("click", (e) => runButton(e.currentTarget, "fleet:save", "Saving…", "Save Running Sessions", { op: "save" }));
+$("relabel").addEventListener("click", (e) => runButton(e.currentTarget, "fleet:relabel", "Fixing…", "Fix Session Names", { op: "relabel" }));
 $("updateClaude").addEventListener("click", () => confirmFleet("update"));
 $("newSession").addEventListener("click", newSession);
 $("dlg").addEventListener("click", (e) => { if (e.target === $("dlg")) $("dlg").close(); });
