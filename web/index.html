@@ -350,6 +350,7 @@ function sessionMenu(s) {
     el("div", { class: "menu" },
       el("button", { type: "button", onclick: () => confirmRelaunch(s) }, "Restart…", el("span", { class: "sub" }, "same conversation")),
       el("button", { type: "button", onclick: () => sendPrompt(s) }, "Send Prompt…"),
+      el("button", { type: "button", onclick: () => renameDialog(s, "s:" + s.session) }, "Rename…"),
       el("button", { type: "button", onclick: () => confirmClear(s) }, "Clear Context…", el("span", { class: "sub" }, "deletes this conversation")),
       el("button", { type: "button", onclick: () => confirmStop(s) }, "Stop…", el("span", { class: "sub" }, "keeps the conversation")),
     ),
@@ -408,6 +409,28 @@ function sendPrompt(s) {
         el("div", { class: "foot" },
           el("button", { class: "ghost", type: "button", onclick: close }, "Cancel"),
           el("button", { type: "submit" }, "Send Prompt"))),
+    ];
+  });
+}
+
+function renameDialog(t, key) {
+  openDialog(close => {
+    const input = el("input", { type: "text", id: "renameTitle", name: "session-title", autocomplete: "off", spellcheck: "false", value: t.title || "" });
+    const go = (e) => {
+      e.preventDefault();
+      const title = input.value.trim();
+      if (!title) { toast("Enter a title."); return input.focus(); }
+      close();
+      if (title !== t.title) run(key, "Renaming…", t.title || t.id.slice(0, 8), { op: "rename", conv: t.id, title });
+    };
+    return [
+      el("h3", {}, `Rename “${t.title || t.id.slice(0, 8)}”`),
+      t.state === "working" ? el("p", { class: "warn" }, "This session is working. Wait until it is idle, or the rename is refused.") : null,
+      el("form", { onsubmit: go, style: "display:grid;gap:16px" },
+        el("div", { class: "field" }, el("label", { for: "renameTitle" }, "Title"), input),
+        el("div", { class: "foot" },
+          el("button", { class: "ghost", type: "button", onclick: close }, "Cancel"),
+          el("button", { type: "submit" }, "Rename"))),
     ];
   });
 }
@@ -502,6 +525,7 @@ function renderConvs() {
         saved.has(c.id) ? el("span", { class: "dim" }, " · starts on restart") : null)),
     el("div", { class: "actions" }, ...(pending.has("c:" + c.id) ? [el("button", { class: "ghost", type: "button", disabled: true }, pending.get("c:" + c.id))] : [
       el("button", { class: "ghost", type: "button", onclick: () => startConv(c) }, "Start"),
+      el("button", { class: "quiet", type: "button", "aria-label": `Rename ${c.title || c.id.slice(0, 8)}`, onclick: () => renameDialog(c, "c:" + c.id) }, "Rename…"),
       el("button", { class: "quiet", type: "button", "aria-label": `Delete ${c.title || c.id.slice(0, 8)}`, onclick: () => confirmDelete(c) }, "Delete…")])))),
     ...(rest > 0 ? [el("li", {}, el("button", { class: "ghost more", type: "button", onclick: () => { showAll = true; renderLists(true); } }, `Show All (${S.conversations.length})`))] : []));
 }

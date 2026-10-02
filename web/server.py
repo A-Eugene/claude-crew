@@ -221,6 +221,11 @@ def run_action(a):
         if not PROMPT_RE.match(text):
             return 400, "The prompt needs 1–4000 characters.", None
         return (*run("prompt", sess, text), "Sent.")
+    if op == "rename" and conv:
+        title = (a.get("title") or "").strip()
+        if not TITLE_RE.match(title):
+            return 400, "Title needs 1–80 printable characters.", None
+        return (*run("rename", conv, title), "Renamed.")
     if op == "resume" and conv:
         return (*run("resume", conv), "Started.")
     if op == "new":

@@ -101,6 +101,7 @@ session, so change it only when every session should start in the same place.
 | `claude-crew clear <target> [--yes]` | Clear a session's context: a new, empty conversation with the same title, model and effort, then delete the conversation it replaced. Without `--yes` it only prints what would happen. Not Claude Code's `/clear`. |
 | `claude-crew delete <conversation> [--yes]` | Stop it if live, then delete its transcript, its sidecar directory and its uploads. Without `--yes` it only prints what would go. There is no backup. |
 | `claude-crew prompt <target> <text>` | Type keystrokes into that session's input box. Not a messaging channel — see below. |
+| `claude-crew rename <conversation> "<title>"` | Rename a conversation, running or stopped. The window label, the remote-control name and the saved set follow. |
 | `claude-crew save` | Record what runs, with each session's model and effort, as the saved set. |
 | `claude-crew start [--dry-run]` | Start every saved session that is not running. `--force` restarts the running ones too. |
 | `claude-crew restart [delay]` | Save what runs, then restart it via systemd, without killing the caller. |

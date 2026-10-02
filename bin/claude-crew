@@ -37,6 +37,8 @@
 #   delete <conversation> [--yes]
 #                              stop it if live, then delete its transcript for good
 #   prompt <target> <text>     type keystrokes into a session's input box, verbatim
+#   rename <conversation> <title>
+#                              rename a conversation, running or stopped
 #   model  <target> <model>    relaunch on a new model; "default" follows crew.conf again
 #   effort <target> <level>    relaunch at a new effort; "default" follows crew.conf again
 #   relaunch <target>          stop and resume one session on its conversation, model and effort
@@ -1655,6 +1657,69 @@ cmd_prompt() {
   echo "prompted $(title_of_sess "$s") ($s): $text"
 }
 
+# Rename a conversation. A running one gets "/rename <title>" typed into its input
+# box, so Claude Code records the title itself and renames its remote-control
+# session at once. A stopped one gets the records /rename writes: a custom-title
+# and an agent-name line in the transcript, and custom-title.json beside it. The
+# window label and the saved set follow either way.
+cmd_rename() {
+  [ $# -eq 2 ] && [ -n "$2" ] || die 'rename: usage: claude-crew rename <conversation> "<new title>"'
+  local new="$2"
+  case "$new" in *$'\n'*|*$'\r'*) die "rename: a title is one line" ;; esac
+  scan_sessions
+  detect_self
+  local id old s
+  IFS=$'\t' read -r id old < <(resolve_conv "$1")
+  [ -n "$id" ] || exit 1
+  [ "$new" != "$old" ] || { echo "already titled \"$new\""; return 0; }
+  s="${SESS_OF_CONV[$id]:-}"
+  if [ -n "$s" ]; then
+    if [ -n "$SELF_SESS" ] && [ "$s" = "$SELF_SESS" ]; then
+      [ "$ALLOW_SELF" = 1 ] && defer_self "rename"
+      die "rename: that is the session you are running in, and its input box is busy with this turn.
+     Type /rename yourself, or pass --self to have it typed once this turn ends."
+    fi
+    if [ "$WAIT_IDLE" = 1 ]; then
+      local i
+      for ((i = 0; i < 180; i++)); do
+        [ "$(input_box "$s")" = "" ] && break
+        sleep 5
+      done
+    fi
+    cmd_prompt "$s" "/rename $new" >/dev/null
+    local i t=""
+    for ((i = 0; i < 20; i++)); do
+      t=$(conv_title "$id"); [ "$t" = "$new" ] && break
+      sleep 0.5
+    done
+    [ "$t" = "$new" ] || die "rename: typed /rename into $s, but its transcript still says \"$t\" after 10s. Check the session."
+    tmux rename-window -t "$s" "$new"
+  else
+    local p outside=()
+    for p in $(live_pids_of_conv "$id"); do outside+=("$p"); done
+    [ "${#outside[@]}" -eq 0 ] || die "rename: it is live outside the crew (pid ${outside[*]}). Rename it from inside that claude with /rename."
+    python3 - "$(projdir)" "$id" "$new" <<'PY'
+import json, os, sys
+d, cid, title = sys.argv[1:4]
+with open(os.path.join(d, cid + ".jsonl"), "a") as fh:
+    fh.write(json.dumps({"type": "custom-title", "customTitle": title, "sessionId": cid}, ensure_ascii=False, separators=(",", ":")) + "\n")
+    fh.write(json.dumps({"type": "agent-name", "agentName": title, "sessionId": cid}, ensure_ascii=False, separators=(",", ":")) + "\n")
+side = os.path.join(d, cid)
+os.makedirs(side, exist_ok=True)
+with open(os.path.join(side, "custom-title.json"), "w") as fh:
+    json.dump({"customTitle": title}, fh, ensure_ascii=False, separators=(",", ":"))
+PY
+  fi
+  state_lock
+  state_read
+  if [ -n "${ST_MODEL[$id]+x}" ]; then
+    state_put "$id" "${ST_MODEL[$id]}" "${ST_EFFORT[$id]}" "$new"
+    state_write
+  fi
+  state_unlock
+  echo "renamed \"${old:-${id:0:8}}\" to \"$new\""
+}
+
 # Model and effort are launch flags, so changing one means stopping the process
 # and starting it again on the same conversation, in the same pane.
 relaunch_with() {       # $1=target $2=model-or-empty $3=effort-or-empty [$4=what was asked]
@@ -1838,6 +1903,7 @@ case "$cmd" in
   cleared)  load_conf; cmd_cleared "$@" ;;
   delete)   load_conf; cmd_delete "$@" ;;
   prompt)   load_conf; cmd_prompt "$@" ;;
+  rename)   load_conf; cmd_rename "$@" ;;
   model)    load_conf; cmd_model "$@" ;;
   effort)   load_conf; cmd_effort "$@" ;;
   relaunch) load_conf; cmd_relaunch "$@" ;;

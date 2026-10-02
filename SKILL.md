@@ -61,6 +61,7 @@ Run it as `claude-crew <command>`, or `crew` for short. Both are on `PATH` via
 | `claude-crew clear <target> [--yes]` | Clear a session's context: a new, empty conversation with the same title, model and effort, then delete the conversation it replaced. Without `--yes` it only prints what would happen. Not Claude Code's `/clear`. |
 | `claude-crew delete <conversation> [--yes]` | Stop it if live, then delete its transcript, its sidecar directory and its uploads. Without `--yes` it only prints what would go. |
 | `claude-crew prompt <target> <text>` | Type a real prompt into that session's running claude. |
+| `claude-crew rename <conversation> "<title>"` | Rename a conversation, running or stopped. The window label, the remote-control name and the saved set follow. |
 | `claude-crew save` | Record what runs, with each session's model and effort, as the saved set. |
 | `claude-crew start [--dry-run]` | Start every saved session that is not running. |
 | `claude-crew restart [delay]` | Save what runs, then restart it via systemd, without killing the caller. |
@@ -274,11 +275,25 @@ turns. They are collapsed to spaces and the command says so.
 
 ## Renaming a session
 
-Rename from inside the session with `/rename`. The conversation's own title is
-the source of truth: every relaunch (start, restart, relaunch, model, effort)
-reads the latest title from the transcript and launches under it, so the window
-label and the remote-control name follow the rename on the next relaunch.
-`claude-crew relabel` updates the window label without a relaunch.
+```
+claude-crew rename "trading research 2" "Trading Research 3"
+claude-crew rename 2b599c1a "Host Admin" --self    # your own session
+```
+
+- **A running session** gets `/rename <title>` typed into its input box, so
+  Claude Code records the title and renames its remote-control session at once.
+  It needs the box idle and empty, like `prompt`. The window label follows.
+- **A stopped conversation** gets the records `/rename` writes: a
+  `custom-title` and an `agent-name` line in its transcript, and
+  `custom-title.json` beside it. It refuses a conversation live in a terminal
+  outside the crew.
+- **Your own session** is mid-turn, so its box is busy. `--self` types the
+  rename once the turn ends.
+
+The saved set takes the new title either way. The conversation's own title is
+the source of truth: every relaunch reads the latest title from the transcript
+and launches under it. `/rename` from inside a session works too, and
+`claude-crew relabel` then updates the window label without a relaunch.
 
 ## Changing model or effort
 
