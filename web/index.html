@@ -128,9 +128,12 @@ dialog::backdrop { background: rgba(0,0,0,.55); }
 .more { margin-top: 12px; }
 .title.withid { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 8px; white-space: normal; }
 .title.withid .t { min-width: 0; overflow-wrap: anywhere; }
-li.row.scroll { overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: thin; }
-li.row.scroll .body { flex: none; min-width: auto; }
-li.row.scroll .title { overflow: visible; text-overflow: clip; }
+#convs { display: grid; grid-template-columns: max-content 1fr; column-gap: 12px; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: thin; }
+#convs > li { grid-column: 1 / -1; }
+#convs > li.row { display: grid; grid-template-columns: subgrid; }
+#convs .body { min-width: auto; }
+#convs .title, #convs .meta { overflow: visible; text-overflow: clip; }
+#convs .actions { justify-self: end; }
 .idtag { flex: none; font: 400 13px/1 var(--mono); color: var(--text-3); }
 .sechead { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin: 40px 0 8px; }
 .sechead h2 { margin: 0; }
@@ -521,7 +524,7 @@ function renderConvs() {
   const saved = new Set((S.saved_stopped || []).map(c => c.id));
   const list = showAll ? S.conversations : S.conversations.slice(0, 6);
   const rest = S.conversations.length - list.length;
-  ul.replaceChildren(...list.map(c => el("li", { class: "row scroll" },
+  ul.replaceChildren(...list.map(c => el("li", { class: "row" },
     el("div", { class: "body" },
       el("div", { class: "title", translate: "no" }, c.title || "Untitled"),
       el("div", { class: "meta" }, el("span", { class: "mono", translate: "no" }, c.id.slice(0, 8)),
