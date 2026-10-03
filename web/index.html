@@ -83,7 +83,7 @@ button:disabled { opacity: .4; cursor: not-allowed; }
 form.defaults { display: grid; gap: 20px; padding: 16px 0 0; }
 .field { display: grid; gap: 6px; }
 .field > label, .field > .label { font-size: 13px; color: var(--text-2); }
-select, input[type=number], input[type=text] {
+select, input[type=number], input[type=text], input[type=search] {
   font: 400 15px/1 var(--sans); height: 40px; padding: 0 12px; border-radius: 0; width: 100%;
   background-color: var(--layer); color: var(--text); border: 0; border-bottom: 1px solid var(--line-strong);
 }
@@ -126,6 +126,8 @@ dialog::backdrop { background: rgba(0,0,0,.55); }
 #toast.show { opacity: 1; }
 .actions button, .actions .btn { padding: 0 12px; }
 .more { margin-top: 12px; }
+#convSearch { margin-bottom: 4px; }
+#convSearch::-webkit-search-cancel-button { filter: grayscale(1); cursor: pointer; }
 .title.withid { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 8px; white-space: normal; }
 .title.withid .t { min-width: 0; overflow-wrap: anywhere; }
 #convs { display: grid; grid-template-columns: max-content 1fr; column-gap: 12px; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: thin; }
@@ -182,7 +184,9 @@ textarea { min-height: 120px; resize: vertical; }
   <ul id="slots"></ul>
 
   <h2 id="stopped">Stopped</h2>
+  <input type="search" id="convSearch" name="search" aria-label="Search stopped sessions" placeholder="Title or ID…" enterkeyhint="search" autocomplete="off" spellcheck="false">
   <ul id="convs"></ul>
+  <div id="convsMore"></div>
 
   <h2 id="defaults">Defaults</h2>
   <form class="defaults" id="defaultsForm" autocomplete="off">
@@ -224,7 +228,7 @@ textarea { min-height: 120px; resize: vertical; }
   </div>
 </main>
 
-<dialog id="dlg"><div class="dlg" id="dlgBody"></div></dialog>
+<dialog id="dlg" aria-labelledby="dlgTitle"><div class="dlg" id="dlgBody"></div></dialog>
 <div id="toast" role="status" aria-live="polite"></div>
 
 <script>
@@ -313,6 +317,7 @@ function renderLists(force) {
 
 function openDialog(build) {
   const d = $("dlg"), b = $("dlgBody"); b.replaceChildren(...build(() => d.close()).flat().filter(n => n != null));
+  const h = b.querySelector("h3"); if (h) h.id = "dlgTitle";
   d.showModal();
 }
 
@@ -466,7 +471,7 @@ function newSession() {
 
 function lowMemory() {
   const mb = S.memory_available_mb;
-  return mb != null && mb < 700 ? el("p", { class: "warn" }, `Only ${mb} MB of memory is free. Each session needs about 300 MB, so another one may slow the others.`) : null;
+  return mb != null && mb < 700 ? el("p", { class: "warn" }, `Only ${mb}\u00a0MB of memory is free. Each session needs about 300 MB, so another one may slow the others.`) : null;
 }
 
 function confirmDelete(c) {
@@ -518,12 +523,16 @@ function renderSlots() {
 }
 
 let showAll = false;
+const norm = (t) => (t || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 function renderConvs() {
-  const ul = $("convs");
-  if (!S.conversations.length) return ul.replaceChildren(el("li", { class: "empty" }, "No stopped sessions."));
+  const ul = $("convs"), more = $("convsMore");
+  const words = norm($("convSearch").value).split(" ").filter(Boolean);
+  const all = S.conversations.filter(c => { const h = " " + norm(c.title) + " " + c.id + " "; return words.every(w => h.includes(w)); });
+  more.replaceChildren();
+  if (!all.length) return ul.replaceChildren(el("li", { class: "empty" }, S.conversations.length ? `No stopped session matches “${$("convSearch").value.trim()}”.` : "No stopped sessions."));
   const saved = new Set((S.saved_stopped || []).map(c => c.id));
-  const list = showAll ? S.conversations : S.conversations.slice(0, 6);
-  const rest = S.conversations.length - list.length;
+  const list = showAll || words.length ? all : all.slice(0, 6);
+  const rest = all.length - list.length;
   ul.replaceChildren(...list.map(c => el("li", { class: "row" },
     el("div", { class: "body" },
       el("div", { class: "title", translate: "no" }, c.title || "Untitled"),
@@ -532,8 +541,8 @@ function renderConvs() {
     el("div", { class: "actions" }, ...(pending.has("c:" + c.id) ? [el("button", { class: "ghost", type: "button", disabled: true }, pending.get("c:" + c.id))] : [
       el("button", { class: "ghost", type: "button", onclick: () => startConv(c) }, "Start"),
       el("button", { class: "quiet", type: "button", "aria-label": `Rename ${c.title || c.id.slice(0, 8)}`, onclick: () => renameDialog(c, "c:" + c.id) }, "Rename…"),
-      el("button", { class: "quiet", type: "button", "aria-label": `Delete ${c.title || c.id.slice(0, 8)}`, onclick: () => confirmDelete(c) }, "Delete…")])))),
-    ...(rest > 0 ? [el("li", {}, el("button", { class: "ghost more", type: "button", onclick: () => { showAll = true; renderLists(true); } }, `Show All (${S.conversations.length})`))] : []));
+      el("button", { class: "quiet", type: "button", "aria-label": `Delete ${c.title || c.id.slice(0, 8)}`, onclick: () => confirmDelete(c) }, "Delete…")])))));
+  if (rest > 0) more.append(el("button", { class: "ghost more", type: "button", onclick: () => { showAll = true; renderLists(true); } }, `Show All (${all.length})`));
 }
 
 function startConv(c) {
@@ -636,6 +645,14 @@ function runButton(btn, key, label, who, payload) {
   run(key, label, who, payload);
   const t = setInterval(() => { if (!pending.has(key)) { clearInterval(t); btn.disabled = false; btn.textContent = text; } }, 300);
 }
+// The search lives in the URL as ?q=, so a reload or a shared link keeps it.
+$("convSearch").value = new URLSearchParams(location.search).get("q") || "";
+$("convSearch").addEventListener("input", (e) => {
+  const u = new URL(location.href);
+  if (e.target.value.trim()) u.searchParams.set("q", e.target.value.trim()); else u.searchParams.delete("q");
+  history.replaceState(null, "", u);
+  if (S) renderConvs();
+});
 $("startSaved").addEventListener("click", (e) => runButton(e.currentTarget, "fleet:start", "Starting…", "Start Saved Sessions", { op: "start" }));
 $("saveSlots").addEventListener("click", (e) => runButton(e.currentTarget, "fleet:save", "Saving…", "Save Running Sessions", { op: "save" }));
 $("relabel").addEventListener("click", (e) => runButton(e.currentTarget, "fleet:relabel", "Fixing…", "Fix Session Names", { op: "relabel" }));
