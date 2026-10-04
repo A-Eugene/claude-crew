@@ -201,8 +201,8 @@ def defaults_args(a):
 def run_action(a):
     """Returns (exit code, output, message). The message is what the page shows on success."""
     op, sess, conv = a.get("op"), a.get("session"), a.get("conv")
-    # A working session is refused unless the page sent an explicit interrupt.
-    pre = ["--interrupt"] if a.get("interrupt") is True else []
+    # A busy session is refused unless the page sent an explicit force.
+    pre = ["--force"] if a.get("force") is True else []
 
     def run(*args, **kw):
         return crew(*pre, *args, **kw)

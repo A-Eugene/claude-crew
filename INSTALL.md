@@ -175,7 +175,7 @@ excludes keep them. Never copy over them.
 
 ## Rules for an AI agent doing this
 
-- Run `claude-crew start --force`, `restart` and `stop` only when asked. Each one
+- Run `claude-crew start --restart`, `restart` and `stop` only when asked. Each one
   stops running sessions, and one of them may be your own.
 - Never run `tmux kill-server`. It ends every tmux session on the machine,
   including the one you are running in.

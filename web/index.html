@@ -345,13 +345,13 @@ function busyWarning(s, verb) {
 }
 
 // The primary button of a confirm dialog. A busy session gets a red
-// "Interrupt & …" button that sends the interrupt flag; otherwise the plain one.
+// "Force …" button that sends the force flag; otherwise the plain one.
 function confirmBtn(s, label, busyText, payload, close, danger) {
   const busy = isBusy(s);
   return el("button", { class: busy || danger ? "danger" : null, type: "button", onclick: () => {
     close();
-    run("s:" + s.session, busyText, s.title || s.id.slice(0, 8), { ...payload, ...(busy ? { interrupt: true } : {}) });
-  } }, busy ? `Interrupt & ${label}` : label);
+    run("s:" + s.session, busyText, s.title || s.id.slice(0, 8), { ...payload, ...(busy ? { force: true } : {}) });
+  } }, busy ? `Force ${label}` : label);
 }
 
 function sessionMenu(s) {
@@ -492,13 +492,13 @@ function confirmFleet(kind) {
     el("p", {}, restart ? "Every session stops and resumes its conversation." :
                           "Installs the latest Claude Code, then restarts every session."),
     busy.length ? el("p", { class: "warn" }, `Not idle: ${busy.map(s => `${s.title || s.id.slice(0, 8)} (${STATE_LABEL[s.state]})`).join(", ")}. `
-      + `Wait until ${busy.length === 1 ? "it is" : "they are"} idle, or interrupt ${busy.length === 1 ? "it" : "them"}.`) : null,
+      + `Wait until ${busy.length === 1 ? "it is" : "they are"} idle, or force it.`) : null,
     el("div", { class: "foot" },
       el("button", { class: "ghost", type: "button", onclick: close }, "Cancel"),
       el("button", { class: busy.length ? "danger" : null, type: "button", onclick: () => {
         close();
-        run("fleet:" + kind, restart ? "Restarting…" : "Updating…", restart ? "Restart All" : "Update", { op: kind, ...(busy.length ? { interrupt: true } : {}) });
-      } }, busy.length ? (restart ? "Interrupt & Restart All" : "Interrupt & Update") : (restart ? "Restart All" : "Update & Restart"))),
+        run("fleet:" + kind, restart ? "Restarting…" : "Updating…", restart ? "Restart All" : "Update", { op: kind, ...(busy.length ? { force: true } : {}) });
+      } }, busy.length ? (restart ? "Force Restart All" : "Force Update") : (restart ? "Restart All" : "Update & Restart"))),
   ]);
 }
 

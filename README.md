@@ -103,7 +103,7 @@ session, so change it only when every session should start in the same place.
 | `claude-crew prompt <target> <text>` | Type keystrokes into that session's input box. Not a messaging channel — see below. |
 | `claude-crew rename <conversation> "<title>"` | Rename a conversation, running or stopped. The window label, the remote-control name and the saved set follow. |
 | `claude-crew save` | Record what runs, with each session's model and effort, as the saved set. |
-| `claude-crew start [--dry-run]` | Start every saved session that is not running. `--force` restarts the running ones too. |
+| `claude-crew start [--dry-run]` | Start every saved session that is not running. `--restart` restarts the running ones too. |
 | `claude-crew restart [delay]` | Save what runs, then restart it via systemd, without killing the caller. |
 | `claude-crew boot on\|off\|status` | Install or remove a systemd unit that runs `claude-crew start` after a reboot. |
 | `claude-crew update` | Upgrade the claude binary, then restart. |
@@ -136,12 +136,12 @@ It adds nothing to what you pass it, on purpose.
 ## It will not let you kill yourself
 
 Every stop path is fatal when aimed at the session you are running in. `stop`,
-`relaunch`, `model`, `effort`, `clear` and `start --force` refuse when the target
+`relaunch`, `model`, `effort`, `clear` and `start --restart` refuse when the target
 is your own session, and `whoami` tells you which one that is.
 
 The guard reads the process tree rather than tmux. Under systemd, cron, or a
 plain ssh shell there is no claude ancestor and it stays silent, which is how
-`restart` performs the same work an inline `start --force` is refused. Nothing
+`restart` performs the same work an inline `start --restart` is refused. Nothing
 distinguishes them but the calling context.
 
 `--self` does not lift the guard. It runs the same command on a timer instead:
@@ -158,12 +158,18 @@ transcript cannot be brought back.
 
 Every command that stops a session checks it first: `stop`, `relaunch`,
 `model`, `effort`, `clear`, `delete` of a live conversation, and
-`start --force`. A session that is working on a turn, waiting on a question or
+`start --restart`. A session that is working on a turn, waiting on a question or
 permission prompt, or holding an unsent draft is refused, and nothing is done.
 So is a session in the `waiting` state: between turns, with a background task
 it started still running, such as a monitor or a command run in the background.
 That task is a child of the session's claude, so stopping claude would end it.
-`--interrupt` acts anyway.
+`--force` acts anyway. It prints a `WARNING:` line naming the session and
+what it loses, then proceeds:
+
+```
+$ claude-crew --force stop "trading research 2"
+WARNING: stop --force: [VPS] Trading Research 2 (Claude_a069d553) is waiting on a background task it started, which ends with it.
+```
 
 `restart` and `update` stop every session, so they check every session. If any
 running session is not idle, they refuse and list the busy ones, and `update`
@@ -174,9 +180,24 @@ background tasks, and never interrupts one. A session holding an unsent draft st
 not clear a draft. A command a session aims at itself with `--self` waits the
 same way, which lets the turn that asked for it finish first.
 
-The web page shows the same checks. A busy session's dialog offers only an
-"Interrupt & …" button, and Restart All and Update list the sessions that are
-not idle and offer "Interrupt & Restart All" or "Interrupt & Update".
+`restart --force` and `update --force` skip the wait. They list every
+busy session and what it loses, then stop them all when the timer fires. On the
+web page, Restart All and Update show the same list above a red
+"Force …" button.
+
+Every stop ends the processes the session started, not only claude. Claude is
+stopped first, with SIGTERM and then SIGKILL after 30 seconds. Any process it
+started that is still alive after that, such as a background command, a
+monitor or an MCP server, gets SIGTERM and then SIGKILL after 5 seconds. The
+command prints how many it had to end. A background command runs in its own
+process session, so it can outlive a claude that was killed without cleaning up.
+
+`test/force-warning.sh` checks the refusal and the forced warning.
+`test/reap.sh` checks that leftover processes are ended.
+
+The web page shows the same checks. A busy session's dialog offers only a
+"Force …" button, and Restart All and Update list the sessions that are
+not idle and offer "Force Restart All" or "Force Update".
 
 ## Clearing a session's context
 
@@ -372,7 +393,7 @@ and `relabel` renames the session.
 its transcript constantly, so merely being open keeps it at the top of any
 list sorted by mtime.
 
-**Stop every session before launching any.** `start --force` stops everything
+**Stop every session before launching any.** `start --restart` stops everything
 first, in a separate pass. Starting a conversation while its old process is
 still alive puts two processes on one transcript.
 

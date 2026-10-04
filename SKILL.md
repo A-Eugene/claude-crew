@@ -86,7 +86,7 @@ guessed.
 
 Each one is a fact about the tooling, not a caution to be careful.
 
-**`claude-crew start --force` inline stops the calling session's own claude mid-turn**
+**`claude-crew start --restart` inline stops the calling session's own claude mid-turn**
 and wedges its remote control. `claude-crew restart` hands the job to systemd, so the
 caller's shell is already gone when it fires. Use that instead.
 
@@ -108,7 +108,7 @@ Worse, only the first half of the command runs. Crew is a child of your own
 claude, so the tool shell dies with it and the relaunch two lines later never
 happens.
 
-So `stop`, `relaunch`, `model`, `effort`, `clear` and `start --force` refuse
+So `stop`, `relaunch`, `model`, `effort`, `clear` and `start --restart` refuse
 when the target is your own session. `claude-crew whoami` shows which session
 that is.
 
@@ -122,7 +122,7 @@ crew: changing model or effort would stop the session you are running in (Claude
 The guard reads the process tree, not tmux, because `$TMUX` is not reliably
 exported into a tool call. Under systemd, cron, or a plain ssh shell there is no
 claude ancestor, so it stays silent — which is exactly how `claude-crew restart`
-keeps doing the same work that an inline `start --force` is refused. No flag
+keeps doing the same work that an inline `start --restart` is refused. No flag
 distinguishes them; the calling context does.
 
 `--self` does not run the command inline. It schedules the same argument line
@@ -148,15 +148,24 @@ Commands that stop a session refuse one that is working, waiting on a question
 or permission prompt, holding an unsent draft, or `waiting`: between turns with
 a background task of its own still running, such as a monitor or a background
 command, which stopping it would end. This covers `stop`, `relaunch`, `model`,
-`effort`, `clear`, `delete` of a live conversation, and `start --force`. When
-one is refused, tell the user which session is busy and why. Pass `--interrupt`
+`effort`, `clear`, `delete` of a live conversation, and `start --restart`. When
+one is refused, tell the user which session is busy and why. Pass `--force`
 only when the user has said to interrupt it.
+
+`--force` forces every one of these commands. It prints a `WARNING:` line
+naming each busy session and what it loses (the turn, the pending prompt, the
+draft, or the background task), then proceeds. Relay that warning to the user.
+The web page does the same with a red "Force …" button under the warning.
+
+A stop ends the session's background tasks too. Claude is stopped first, then
+any process it started that is still alive is ended, and the command prints how
+many. So a forced stop never leaves a background command or monitor running.
 
 `restart` and `update` refuse while any other running session is not idle, and
 list the busy ones. Your own session is left out, and the scheduled restart
 waits up to 15 minutes for your turn and every session's background tasks to
 end. Anything run with `--self` waits
-the same way. An unsent draft still stops them. Do not pass `--interrupt` to
+the same way. An unsent draft still stops them. Do not pass `--force` to
 `restart` or `update` unless the user has said to interrupt the listed sessions.
 
 ## Project skills and instructions

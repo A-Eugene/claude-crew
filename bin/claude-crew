@@ -16,9 +16,9 @@
 # Usage:  claude-crew <command> [args]
 #   setup [flags]              write/patch crew.conf (see --help)
 #   status [--json]            what is running, what is saved, what is stopped
-#   start [--force] [--dry-run]
+#   start [--restart] [--dry-run]
 #                              start every saved session that is not running;
-#                              --force restarts the running ones too
+#                              --restart restarts the running ones too
 #   restart [delay]            save what runs, then restart it via systemd
 #                              WITHOUT killing the caller. Refused while any
 #                              other session is not idle
@@ -54,8 +54,10 @@
 #                have restarted it. `delete` ignores --self: the caller's own
 #                conversation is never deleted.
 #   --in <secs>  how long --self waits before firing (default 15).
-#   --interrupt  act on a session even while it is working, waiting on a
-#                prompt, or holding an unsent draft. Without it those are refused.
+#   --force      act on a session even while it is working, waiting on a
+#                prompt, holding an unsent draft, or waiting on a background
+#                task. Without it those are refused. With it, a warning names
+#                each busy session and what it loses, and the command proceeds.
 #   --wait-idle  wait up to 15 minutes for a working session to finish instead
 #                of refusing. --self and restart add it themselves.
 #
@@ -114,8 +116,8 @@ ALLOW_SELF=0
 DEFER_DELAY=15
 # Every argument this run was given, for re-running it on a timer.
 ORIG_ARGS=()
-# Set by --interrupt: act on a session even while it is working.
-INTERRUPT=0
+# Set by --force: act on a session even while it is working.
+FORCE=0
 # Set by --wait-idle: wait for a working session to go idle instead of refusing.
 WAIT_IDLE=0
 
@@ -373,7 +375,7 @@ scan_sessions() {
 #
 # When crew runs from systemd, cron, or a plain ssh shell there is no claude
 # ancestor and this returns empty — which is exactly why `claude-crew restart`
-# keeps working while an inline `start --force` is refused.
+# keeps working while an inline `start --restart` is refused.
 ppid_of() {
   local s
   s=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
@@ -444,8 +446,9 @@ refuse_self() {
 }
 
 # Background tool shells a claude process started and still runs: a monitor, or a
-# command run in the background. Each is a child of claude, so stopping claude
-# ends it. MCP servers are children too, but are not tool shells. $1=claude pid
+# command run in the background. Each is a child of claude, and stop_claude_in
+# ends it along with claude. MCP servers are children too, but are not tool
+# shells. $1=claude pid
 bg_tasks() {
   local c n=0
   for c in $(pgrep -P "$1" 2>/dev/null); do
@@ -481,15 +484,31 @@ sess_activity() {       # $1=session
   fi
 }
 
+# What a session in this state loses when it is stopped. Empty for an idle one.
+# $1=activity
+busy_cost() {
+  case "$1" in
+    working) echo "is working on a turn, which ends now" ;;
+    dialog)  echo "is waiting on a question or permission prompt, which is cancelled" ;;
+    draft)   echo "has an unsent draft in its input box, which is discarded" ;;
+    waiting) echo "is waiting on a background task it started, which ends with it" ;;
+  esac
+}
+
 # Refuse to stop a session that is working, waiting on a prompt, holding an
-# unsent draft, or waiting on a background task of its own. --interrupt
-# overrides. With --wait-idle, wait up to 15 minutes for anything but a draft to
-# finish instead. A draft is never waited on, since nothing will clear it.
+# unsent draft, or waiting on a background task of its own. --force
+# overrides, and warns what the session loses. With --wait-idle, wait up to 15
+# minutes for anything but a draft to finish instead. A draft is never waited
+# on, since nothing will clear it.
 # $1=session $2=what was asked
 guard_busy() {
-  [ "$INTERRUPT" = 1 ] && return 0
   local s="$1" a i why
   a=$(sess_activity "$s")
+  if [ "$FORCE" = 1 ]; then
+    why=$(busy_cost "$a")
+    if [ -n "$why" ]; then echo "WARNING: $2 --force: $(title_of_sess "$s") ($s) $why." >&2; fi
+    return 0
+  fi
   if [ "$WAIT_IDLE" = 1 ] && [[ "$a" == working || "$a" == dialog || "$a" == waiting ]]; then
     echo "waiting for $(title_of_sess "$s") to finish its turn and its background tasks"
     for ((i = 0; i < 180; i++)); do
@@ -508,26 +527,34 @@ guard_busy() {
   esac
   [ "$WAIT_IDLE" = 1 ] && [ "$a" != draft ] && why="$why after 15 minutes of waiting"
   die "$2: $(title_of_sess "$s") ($s) $why. Nothing was done.
-     Wait until it is idle, or pass --interrupt to $2 anyway."
+     Wait until it is idle, or pass --force to $2 anyway."
 }
 
 # Refuse an operation that stops every session while any of them is not idle:
 # working, waiting on a prompt, holding an unsent draft, or waiting on a
-# background task of its own. --interrupt
-# overrides. The caller's own session is left out: it is mid-turn by definition,
-# and the scheduled run waits for that turn to end. $1=what was asked
+# background task of its own. --force
+# overrides, and warns what each busy session loses. The caller's own session is
+# left out: it is mid-turn by definition, and the scheduled run waits for that
+# turn to end. $1=what was asked
 guard_all() {
-  [ "$INTERRUPT" = 1 ] && return 0
-  local s a busy=()
+  local s a busy=() cost=()
   for s in "${!PID_OF_SESS[@]}"; do
     [ "$s" = "${SELF_SESS:-}" ] && continue
     a=$(sess_activity "$s")
-    case "$a" in working|dialog|draft|waiting) busy+=("$(title_of_sess "$s") ($s): $a") ;; esac
+    case "$a" in working|dialog|draft|waiting)
+      busy+=("$(title_of_sess "$s") ($s): $a")
+      cost+=("$(title_of_sess "$s") ($s) $(busy_cost "$a")") ;;
+    esac
   done
   [ "${#busy[@]}" -eq 0 ] && return 0
+  if [ "$FORCE" = 1 ]; then
+    echo "WARNING: $1 --force stops ${#busy[@]} session(s) that are not idle:" >&2
+    printf '       %s\n' "${cost[@]}" >&2
+    return 0
+  fi
   die "$1: ${#busy[@]} session(s) are not idle, so nothing was done:
 $(printf '       %s\n' "${busy[@]}")
-     Try again when they are idle, or pass --interrupt to $1 anyway."
+     Try again when they are idle, or pass --force to $1 anyway."
 }
 
 # Is this conversation live in one of our sessions? Rescans first, so it is
@@ -792,25 +819,72 @@ start_claude_in() {
   tmux send-keys -t "$s" Enter
 }
 
+# The start time of a process in clock ticks, field 22 of /proc/<pid>/stat. A pid
+# plus its start time names one process, so a reused pid is never mistaken for it.
+proc_start() {
+  local s
+  s=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+  s=${s##*') '}
+  set -- $s
+  echo "${20:-}"
+}
+
+# Every descendant of a process as "pid:starttime", one per line. $1=pid
+descendants() {
+  local c st
+  for c in $(pgrep -P "$1" 2>/dev/null); do
+    st=$(proc_start "$c") || continue
+    echo "$c:$st"
+    descendants "$c"
+  done
+}
+
+# End whatever is still alive out of a list taken by descendants(): SIGTERM,
+# then SIGKILL after 5s. Prints how many it had to end. $@=pid:starttime ...
+reap_survivors() {
+  local e live=() i
+  for e in "$@"; do
+    [ "$(proc_start "${e%%:*}" 2>/dev/null)" = "${e##*:}" ] && live+=("$e")
+  done
+  [ "${#live[@]}" -eq 0 ] && return 0
+  for e in "${live[@]}"; do kill "${e%%:*}" 2>/dev/null || true; done
+  for ((i = 0; i < 10; i++)); do
+    sleep 0.5
+    local left=0
+    for e in "${live[@]}"; do
+      [ "$(proc_start "${e%%:*}" 2>/dev/null)" = "${e##*:}" ] && left=1
+    done
+    [ "$left" = 0 ] && break
+  done
+  for e in "${live[@]}"; do
+    [ "$(proc_start "${e%%:*}" 2>/dev/null)" = "${e##*:}" ] && kill -9 "${e%%:*}" 2>/dev/null
+  done
+  echo "ended ${#live[@]} process(es) the session left running (background tasks, tool shells, MCP servers)"
+}
+
 # Stop the claude in a session and LEAVE THE PANE. SIGTERM lets claude flush its
-# transcript; SIGKILL is the last resort after 30s.
+# transcript; SIGKILL is the last resort after 30s. Claude goes first, so a
+# background task ending cannot start a new turn. Then every process claude
+# started that is still alive is ended too: a background command or a monitor
+# runs in its own process session and can outlive claude.
 stop_claude_in() {
   # Declared on separate lines on purpose: bash marks every name in a single
   # `local` statement local BEFORE evaluating any of the right-hand sides, so
   # `local s="$1" pid="${PID_OF_SESS[$s]:-}"` reads an already-localised, still
   # unset $s and aborts under `set -u`.
   local s="$1"
-  local i pid="${PID_OF_SESS[$s]:-}"
+  local i pid="${PID_OF_SESS[$s]:-}" kids=()
   [ -n "$pid" ] || pid=$(claude_pid_in "$s")
   [ -n "$pid" ] || return 0
+  mapfile -t kids < <(descendants "$pid")
   kill "$pid" 2>/dev/null || true
   for ((i = 0; i < 60; i++)); do
-    kill -0 "$pid" 2>/dev/null || { unset "PID_OF_SESS[$s]"; return 0; }
+    kill -0 "$pid" 2>/dev/null || break
     sleep 0.5
   done
-  kill -9 "$pid" 2>/dev/null || true
-  sleep 1
+  if kill -0 "$pid" 2>/dev/null; then kill -9 "$pid" 2>/dev/null || true; sleep 1; fi
   unset "PID_OF_SESS[$s]"
+  reap_survivors ${kids[@]+"${kids[@]}"}
 }
 
 # Stop the claude in a session and remove the session. Only ever this one
@@ -1136,15 +1210,15 @@ cmd_migrate() {
 }
 
 cmd_start() {
-  local force=0 dry=0 a
+  local again=0 dry=0 a
   for a in "$@"; do
     case "$a" in
-      --force)   force=1 ;;
+      --restart) again=1 ;;
       --dry-run) dry=1 ;;
-      *) die "start: usage: claude-crew start [--force] [--dry-run]" ;;
+      *) die "start: usage: claude-crew start [--restart] [--dry-run]" ;;
     esac
   done
-  if [ "$force" = 1 ] && [ "$dry" = 1 ]; then die "start: --force and --dry-run do not combine"; fi
+  if [ "$again" = 1 ] && [ "$dry" = 1 ]; then die "start: --restart and --dry-run do not combine"; fi
 
   state_read
   if [ "${#ST_ORDER[@]}" -eq 0 ]; then
@@ -1155,13 +1229,13 @@ cmd_start() {
   scan_sessions
   detect_self
 
-  if [ "$force" = 1 ]; then
-    # --force stops every session, so running it from inside one is always fatal
+  if [ "$again" = 1 ]; then
+    # --restart stops every session, so running it from inside one is always fatal
     # to the caller. Under systemd there is no claude ancestor, SELF_SESS is
     # empty, and this does not fire — which is how `restart` does the same work.
-    if [ -n "$SELF_SESS" ]; then refuse_self "$SELF_SESS" "start --force"; fi
+    if [ -n "$SELF_SESS" ]; then refuse_self "$SELF_SESS" "start --restart"; fi
     local s
-    for s in "${!PID_OF_SESS[@]}"; do guard_busy "$s" "start --force"; done
+    for s in "${!PID_OF_SESS[@]}"; do guard_busy "$s" "start --restart"; done
     # Stop every running session first, in a separate pass, so no conversation
     # is ever started while its old process is still alive: two processes
     # appending to one transcript corrupt it.
@@ -1234,7 +1308,7 @@ cmd_start() {
 }
 
 # Restart every session WITHOUT killing the caller. Running `claude-crew start
-# --force` inline stops the calling session's own claude mid-turn and wedges its
+# --restart` inline stops the calling session's own claude mid-turn and wedges its
 # remote control, so hand the job to systemd: the caller's shell is already gone
 # when the restart fires.
 #
@@ -1258,10 +1332,10 @@ cmd_restart() {
   save_state
   echo "saved what runs to $STATE"
   local when=--wait-idle
-  [ "$INTERRUPT" = 1 ] && when=--interrupt
+  [ "$FORCE" = 1 ] && when=--force
   systemd-run --on-active="$delay" --unit="$unit" --collect \
     --setenv=HOME="$HOME" --property=KillMode=process \
-    "$CREW_DIR/bin/claude-crew" "$when" start --force
+    "$CREW_DIR/bin/claude-crew" "$when" start --restart
   echo "scheduled $unit in ${delay}s"
   if [ "$when" = --wait-idle ]; then
     echo "a session that gets busy before it fires is waited on, up to 15 minutes, never interrupted. An unsent draft stops the restart"
@@ -1874,7 +1948,8 @@ ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --self) ALLOW_SELF=1; shift ;;
-    --interrupt) INTERRUPT=1; shift ;;
+    --force) FORCE=1; shift ;;
+    --interrupt) die "--interrupt is named --force" ;;
     --wait-idle) WAIT_IDLE=1; shift ;;
     --in)
       [ $# -ge 2 ] || die "--in needs a number of seconds"
