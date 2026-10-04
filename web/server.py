@@ -296,9 +296,16 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path in ("/", "/index.html"):
             return self.send(200, (ROOT / "index.html").read_bytes(), "text/html")
-        if self.path == "/api/state":
+        if self.path in ("/api/state", "/api/state?fresh=1"):
             if not self.authed():
                 return self.send(401, '{"error":"login"}')
+            # The Refresh button asks for a scan now. The page's own poll reads
+            # the snapshot the refresher keeps.
+            if self.path.endswith("?fresh=1"):
+                try:
+                    refresh()
+                except Exception:
+                    pass
             with _lock:
                 body = json.dumps({**_state, "now": time.time()})
             return self.send(200, body)

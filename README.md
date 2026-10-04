@@ -303,6 +303,10 @@ holds no crew logic of its own. Model and effort for a single session are
 changed inside that session, through remote control. The page changes the
 defaults.
 
+The server runs `claude-crew status --json` every 15 seconds and after each
+action, and the page reads that snapshot every 10 seconds. Refresh runs a new
+scan and waits for it, which takes a few seconds.
+
 ```
 web/server.py                  Python standard-library server on 127.0.0.1:3115
 web/index.html                 the page, no build step

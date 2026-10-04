@@ -592,9 +592,9 @@ function showLogin() {
   $("password").focus();
 }
 
-async function load() {
+async function load(fresh) {
   try {
-    const r = await fetch("/api/state", { cache: "no-store" });
+    const r = await fetch(fresh === true ? "/api/state?fresh=1" : "/api/state", { cache: "no-store" });
     if (r.status === 401) return showLogin();
     const j = await r.json();
     $("login").hidden = true; $("app").hidden = false;
@@ -636,7 +636,12 @@ $("defaultsForm").addEventListener("submit", async (e) => {
   if (ok) { dirty = false; renderDefaults(); }
 });
 window.addEventListener("beforeunload", (e) => { if (dirty) { e.preventDefault(); e.returnValue = ""; } });
-$("refresh").addEventListener("click", load);
+$("refresh").addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true; btn.textContent = "Refreshing…";
+  await load(true);
+  btn.disabled = false; btn.textContent = "Refresh";
+});
 $("restartAll").addEventListener("click", () => confirmFleet("restart"));
 // Static buttons outside the lists: disable this one until its action is done.
 function runButton(btn, key, label, who, payload) {
